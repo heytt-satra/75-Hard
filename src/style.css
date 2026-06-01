@@ -63,6 +63,7 @@ select {
   background: var(--field);
   color: var(--ink);
   padding: 0.78rem 0.85rem;
+  text-align: left;
   outline: none;
   transition:
     border-color 160ms ease,
@@ -741,7 +742,10 @@ p {
     font-size: 1rem;
   }
 
-  .hero-controls,
+  .hero-controls {
+    grid-template-columns: 1fr auto;
+  }
+
   .field-row.two {
     grid-template-columns: 1fr;
   }
