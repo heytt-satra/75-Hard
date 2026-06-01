@@ -14,12 +14,15 @@ export const supabase = isSupabaseConfigured
 export const syncDailyLog = async (log: DailyLog) => {
   if (!supabase) return { ok: false, message: 'Supabase env keys missing' }
 
-  const { error } = await supabase.from('daily_logs').upsert({
-    id: log.id,
-    log_date: log.date,
-    payload: log,
-    updated_at: log.updatedAt,
-  })
+  const { error } = await supabase.from('daily_logs').upsert(
+    {
+      id: log.id,
+      log_date: log.date,
+      payload: log,
+      updated_at: log.updatedAt,
+    },
+    { onConflict: 'log_date' }
+  )
 
   return error ? { ok: false, message: error.message } : { ok: true, message: 'Synced' }
 }
