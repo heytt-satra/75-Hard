@@ -14,17 +14,33 @@ export const supabase = isSupabaseConfigured
 export const syncDailyLog = async (log: DailyLog) => {
   if (!supabase) return { ok: false, message: 'Supabase env keys missing' }
 
-  const { error } = await supabase.from('daily_logs').upsert(
-    {
-      id: log.id,
-      log_date: log.date,
-      payload: log,
-      updated_at: log.updatedAt,
-    },
-    { onConflict: 'log_date' }
-  )
+  const row = {
+    id: log.id,
+    log_date: log.date,
+    payload: log,
+    updated_at: log.updatedAt,
+  }
 
-  return error ? { ok: false, message: error.message } : { ok: true, message: 'Synced' }
+  // Try updating existing row for this date first
+  const { data, error: updateError } = await supabase
+    .from('daily_logs')
+    .update({ payload: log, updated_at: log.updatedAt })
+    .eq('log_date', log.date)
+    .select('id')
+
+  if (updateError) return { ok: false, message: updateError.message }
+
+  // No existing row for this date – insert a new one
+  if (!data || data.length === 0) {
+    const { error: insertError } = await supabase
+      .from('daily_logs')
+      .insert(row)
+    return insertError
+      ? { ok: false, message: insertError.message }
+      : { ok: true, message: 'Synced' }
+  }
+
+  return { ok: true, message: 'Synced' }
 }
 
 export const syncRevenueEntry = async (entry: RevenueEntry) => {
