@@ -49,7 +49,31 @@ import type {
   RevenueType,
 } from './types'
 
+type View = 'today' | 'body' | 'mind' | 'business' | 'money' | 'review'
+
 const initialData: MissionData = { logs: [], revenue: [], restarts: [] }
+
+const views: Array<{ id: View; label: string; signal: string }> = [
+  { id: 'today', label: 'Today', signal: 'Core' },
+  { id: 'body', label: 'Body', signal: 'Workout' },
+  { id: 'mind', label: 'Mind', signal: 'Read + write' },
+  { id: 'business', label: 'Business', signal: 'Proof' },
+  { id: 'money', label: 'Money', signal: 'INR 2L' },
+  { id: 'review', label: 'Review', signal: 'Close day' },
+]
+
+const taskView: Record<string, View> = {
+  wake: 'today',
+  water: 'today',
+  food: 'today',
+  workout: 'body',
+  reading: 'mind',
+  writing: 'mind',
+  tera: 'business',
+  lensr: 'business',
+  job: 'business',
+  review: 'review',
+}
 
 const areaLabels: Record<BusinessArea, string> = {
   tera: 'Tera Industries',
@@ -58,9 +82,9 @@ const areaLabels: Record<BusinessArea, string> = {
 }
 
 const areaDescriptions: Record<BusinessArea, string> = {
-  tera: 'Clients, offer, positioning, proposals, productized services.',
-  lensr: 'Production bookings, outreach, shoots, edit pipeline, partners.',
-  job: 'Applications, referrals, cold emails, interview prep, follow-ups.',
+  tera: 'Clients, positioning, offers, proposals, delivery assets.',
+  lensr: 'Production bookings, shoot pipeline, outreach, partner moves.',
+  job: 'Applications, referrals, interview prep, cold email, follow-up.',
 }
 
 function App() {
@@ -68,6 +92,7 @@ function App() {
   const [selectedDate, setSelectedDate] = useState(missionDateKey())
   const [saving, setSaving] = useState(false)
   const [syncMessage, setSyncMessage] = useState('')
+  const [activeView, setActiveView] = useState<View>('today')
 
   const currentLog = useMemo(() => {
     return data.logs.find((log) => log.date === selectedDate) ?? createDailyLog(selectedDate)
@@ -79,8 +104,11 @@ function App() {
   const currentMonthRevenue = data.revenue
     .filter((entry) => entry.date.slice(0, 7) === selectedDate.slice(0, 7) && entry.status === 'won')
     .reduce((total, entry) => total + Number(entry.amount || 0), 0)
+  const revenuePercent = Math.min(100, Math.round((currentMonthRevenue / MONTHLY_REVENUE_GOAL) * 100))
+  const waterPercent = Math.min(100, Math.round((currentLog.waterMl / currentLog.waterGoalMl) * 100))
   const message = disciplineMessages[dayNumber % disciplineMessages.length]
   const streak = activeStreak(data)
+  const openTasks = taskStatus.filter((task) => !task.done)
 
   useEffect(() => {
     loadMissionData().then((stored) => {
@@ -215,321 +243,374 @@ function App() {
 
   return (
     <main className="app-shell">
-      <section className="hero-panel">
-        <div className="hero-copy">
+      <section className={percent === 100 ? 'cockpit complete' : 'cockpit'}>
+        <div className="cockpit-bg" />
+        <div className="cockpit-copy">
           <p className="eyebrow">Mission 75 / Heytt OS</p>
-          <h1>Day {Math.min(dayNumber, TOTAL_DAYS)} of {TOTAL_DAYS}</h1>
+          <h1>Operate the day.</h1>
           <p className="mission-line">{message}</p>
+          <div className="hero-controls">
+            <label className="date-control">
+              <span>Active date</span>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(event) => setSelectedDate(event.target.value)}
+              />
+            </label>
+            <button className="primary-action" onClick={syncNow} disabled={saving}>
+              {saving ? 'Syncing' : 'Sync Supabase'}
+            </button>
+          </div>
+          {syncMessage && <p className="sync-message">{syncMessage}</p>}
         </div>
-        <div className="hero-actions">
-          <label className="date-control">
-            <span>Active date</span>
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(event) => setSelectedDate(event.target.value)}
-            />
-          </label>
-          <button className="icon-button" onClick={syncNow} disabled={saving} title="Sync now">
-            {saving ? 'Syncing' : 'Sync'}
+
+        <div className="mission-gauge">
+          <div className="gauge-ring" style={{ '--percent': `${percent}%` } as React.CSSProperties}>
+            <div>
+              <strong>{percent}%</strong>
+              <span>core</span>
+            </div>
+          </div>
+          <div className="day-readout">
+            <span>Day</span>
+            <strong>{Math.min(dayNumber, TOTAL_DAYS)}</strong>
+            <span>of {TOTAL_DAYS}</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="live-strip">
+        <Signal label="Open tasks" value={openTasks.length.toString()} />
+        <Signal label="Clean streak" value={streak.toString()} />
+        <Signal label="Water" value={`${waterPercent}%`} />
+        <Signal label="Revenue" value={`${revenuePercent}%`} />
+        <Signal label="Supabase" value={isSupabaseConfigured ? 'Ready' : 'Local'} />
+      </section>
+
+      <nav className="mission-nav" aria-label="Mission sections">
+        {views.map((view) => (
+          <button
+            key={view.id}
+            className={activeView === view.id ? 'nav-card active' : 'nav-card'}
+            onClick={() => setActiveView(view.id)}
+          >
+            <span>{view.signal}</span>
+            {view.label}
           </button>
-        </div>
+        ))}
+      </nav>
+
+      <section className="task-command">
+        {taskStatus.map((task) => (
+          <button
+            key={task.id}
+            className={task.done ? 'task-tile done' : 'task-tile'}
+            onClick={() => setActiveView(taskView[task.id] ?? 'today')}
+          >
+            <span>{task.done ? 'Done' : 'Open'}</span>
+            <strong>{task.label}</strong>
+          </button>
+        ))}
       </section>
 
-      <section className="status-grid">
-        <Metric label="Core complete" value={`${percent}%`} />
-        <Metric label="Clean days" value={`${streak}`} />
-        <Metric label="Month cash" value={`INR ${formatMoney(currentMonthRevenue)}`} />
-        <Metric
-          label="Supabase"
-          value={isSupabaseConfigured ? 'Ready' : 'Local'}
-        />
-      </section>
+      <section className="workspace">
+        {activeView === 'today' && (
+          <div className="view-grid">
+            <Panel title="Start The Day" code="CORE">
+              <div className="field-row two">
+                <label>
+                  Wake time
+                  <input
+                    type="time"
+                    value={currentLog.wakeTime}
+                    onChange={(event) => updateLog({ wakeTime: event.target.value })}
+                  />
+                </label>
+                <label>
+                  Body weight
+                  <input
+                    value={currentLog.bodyWeightKg}
+                    onChange={(event) => updateLog({ bodyWeightKg: event.target.value })}
+                    placeholder="85 kg"
+                  />
+                </label>
+              </div>
+              <div className="toggle-row">
+                <Toggle
+                  active={currentLog.foodClean}
+                  label="Food stayed clean"
+                  onClick={() => updateLog({ foodClean: !currentLog.foodClean })}
+                />
+                <Toggle
+                  active={currentLog.paused}
+                  label="Travel/sick pause"
+                  onClick={() => updateLog({ paused: !currentLog.paused })}
+                />
+              </div>
+              {currentLog.paused && (
+                <TextArea
+                  label="Pause reason"
+                  value={currentLog.pauseReason}
+                  onChange={(pauseReason) => updateLog({ pauseReason })}
+                />
+              )}
+            </Panel>
 
-      <section className="mission-band">
-        <div className="progress-card">
-          <div className="ring" style={{ '--percent': `${percent}%` } as React.CSSProperties}>
-            <span>{percent}%</span>
+            <Panel title="Hydration Control" code="H2O">
+              <div className="meter-block">
+                <div>
+                  <span>Water logged</span>
+                  <strong>{currentLog.waterMl} ml</strong>
+                  <p>Goal: {currentLog.waterGoalMl} ml</p>
+                </div>
+                <div className="mini-meter">
+                  <span style={{ width: `${waterPercent}%` }} />
+                </div>
+              </div>
+              <div className="quick-actions">
+                <button onClick={() => addWater(750)}>Add 750 ml</button>
+                <button onClick={() => addWater(1000)}>Add 1 L</button>
+                <button onClick={() => updateLog({ waterMl: 0 })}>Reset</button>
+              </div>
+              <label>
+                Water goal
+                <input
+                  type="number"
+                  value={currentLog.waterGoalMl}
+                  onChange={(event) =>
+                    updateLog({ waterGoalMl: Number(event.target.value || DEFAULT_WATER_GOAL) })
+                  }
+                />
+              </label>
+            </Panel>
           </div>
-          <div>
-            <h2>Today command center</h2>
-            <p>
-              Complete the core. If a core task is missed, restart. If life hits with
-              sickness or travel, pause with proof.
-            </p>
-            {syncMessage && <p className="sync-message">{syncMessage}</p>}
-          </div>
-        </div>
+        )}
 
-        <div className="task-list">
-          {taskStatus.map((task) => (
-            <div className={task.done ? 'task done' : 'task'} key={task.id}>
-              <span className="task-mark">{task.done ? 'DONE' : 'OPEN'}</span>
-              <span>{task.label}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="control-grid">
-        <Panel title="Daily Rules" code="CORE">
-          <div className="field-row two">
-            <label>
-              Wake time
-              <input
-                type="time"
-                value={currentLog.wakeTime}
-                onChange={(event) => updateLog({ wakeTime: event.target.value })}
+        {activeView === 'body' && (
+          <div className="view-grid">
+            <Panel title="Workout Protocol" code="BODY">
+              <div className="segmented">
+                <button
+                  className={currentLog.workoutMode === 'indoor' ? 'selected' : ''}
+                  onClick={() => updateLog({ workoutMode: 'indoor' })}
+                >
+                  Indoor protocol
+                </button>
+                <button
+                  className={currentLog.workoutMode === 'outdoor' ? 'selected' : ''}
+                  onClick={() => updateLog({ workoutMode: 'outdoor' })}
+                >
+                  Outdoor protocol
+                </button>
+              </div>
+              <div className="protocol-card">
+                {currentLog.workoutMode === 'indoor'
+                  ? '15 pushups / 50 squats / 50 crunches / 2 min skipping / 1 min plank'
+                  : '3-5 km walk or run. No overthinking. Move.'}
+              </div>
+              <Toggle
+                active={currentLog.workoutDone}
+                label="Workout complete"
+                onClick={() => updateLog({ workoutDone: !currentLog.workoutDone })}
               />
-            </label>
-            <label>
-              Body weight
-              <input
-                value={currentLog.bodyWeightKg}
-                onChange={(event) => updateLog({ bodyWeightKg: event.target.value })}
-                placeholder="85 kg"
+              <TextArea
+                label="Workout proof"
+                value={currentLog.workoutNote}
+                onChange={(workoutNote) => updateLog({ workoutNote })}
               />
-            </label>
-          </div>
-          <div className="toggle-row">
-            <Toggle
-              active={currentLog.foodClean}
-              label="Food stayed clean"
-              onClick={() => updateLog({ foodClean: !currentLog.foodClean })}
-            />
-            <Toggle
-              active={currentLog.paused}
-              label="Travel/sick pause"
-              onClick={() => updateLog({ paused: !currentLog.paused })}
-            />
-          </div>
-          {currentLog.paused && (
-            <TextArea
-              label="Pause reason"
-              value={currentLog.pauseReason}
-              onChange={(pauseReason) => updateLog({ pauseReason })}
-            />
-          )}
-        </Panel>
+            </Panel>
 
-        <Panel title="Workout" code="BODY">
-          <div className="segmented">
-            <button
-              className={currentLog.workoutMode === 'indoor' ? 'selected' : ''}
-              onClick={() => updateLog({ workoutMode: 'indoor' })}
-            >
-              Indoor
-            </button>
-            <button
-              className={currentLog.workoutMode === 'outdoor' ? 'selected' : ''}
-              onClick={() => updateLog({ workoutMode: 'outdoor' })}
-            >
-              Outdoor
-            </button>
+            <Panel title="Progress Capture" code="PHOTO">
+              <label className="upload-tile">
+                Upload progress photo
+                <input type="file" accept="image/*" onChange={(event) => handlePhoto(event.target.files?.[0])} />
+              </label>
+              {(currentLog.progressPhotoLocal || currentLog.progressPhotoUrl) ? (
+                <img
+                  className="photo-preview"
+                  src={currentLog.progressPhotoLocal || currentLog.progressPhotoUrl}
+                  alt="Progress"
+                />
+              ) : (
+                <div className="empty-state">No photo captured for this day.</div>
+              )}
+              <TextArea
+                label="Body note"
+                value={currentLog.bodyNote}
+                onChange={(bodyNote) => updateLog({ bodyNote })}
+              />
+            </Panel>
           </div>
-          <p className="hint">
-            Indoor: 15 pushups, 50 squats, 50 crunches, 2 min skipping, 1 min plank.
-            Outdoor: 3-5 km walk/run.
-          </p>
-          <Toggle
-            active={currentLog.workoutDone}
-            label="Workout complete"
-            onClick={() => updateLog({ workoutDone: !currentLog.workoutDone })}
-          />
-          <TextArea
-            label="Workout proof"
-            value={currentLog.workoutNote}
-            onChange={(workoutNote) => updateLog({ workoutNote })}
-          />
-        </Panel>
+        )}
 
-        <Panel title="Water + Photo" code="TRACK">
-          <div className="water-line">
-            <strong>{currentLog.waterMl} ml</strong>
-            <span>of {currentLog.waterGoalMl} ml</span>
+        {activeView === 'mind' && (
+          <div className="view-grid">
+            <Panel title="Reading Block" code="READ">
+              <Toggle
+                active={currentLog.readingDone}
+                label="30 minutes reading complete"
+                onClick={() => updateLog({ readingDone: !currentLog.readingDone })}
+              />
+              <label>
+                What did you read?
+                <input
+                  value={currentLog.readingTitle}
+                  onChange={(event) => updateLog({ readingTitle: event.target.value })}
+                  placeholder="Book, chapter, idea"
+                />
+              </label>
+              <TextArea
+                label="What did you learn?"
+                value={currentLog.readingLearned}
+                onChange={(readingLearned) => updateLog({ readingLearned })}
+              />
+            </Panel>
+
+            <Panel title="Writing Block" code="WRITE">
+              <Toggle
+                active={currentLog.writingDone}
+                label="Focused writing session complete"
+                onClick={() => updateLog({ writingDone: !currentLog.writingDone })}
+              />
+              <TextArea
+                label="What did you write?"
+                value={currentLog.writingNote}
+                onChange={(writingNote) => updateLog({ writingNote })}
+              />
+            </Panel>
           </div>
-          <div className="quick-actions">
-            <button onClick={() => addWater(750)}>+750 ml</button>
-            <button onClick={() => addWater(1000)}>+1 L</button>
-            <button onClick={() => updateLog({ waterMl: 0 })}>Reset</button>
-          </div>
-          <label>
-            Water goal
-            <input
-              type="number"
-              value={currentLog.waterGoalMl}
-              onChange={(event) =>
-                updateLog({ waterGoalMl: Number(event.target.value || DEFAULT_WATER_GOAL) })
-              }
-            />
-          </label>
-          <label className="upload-tile">
-            Progress photo
-            <input type="file" accept="image/*" onChange={(event) => handlePhoto(event.target.files?.[0])} />
-          </label>
-          {(currentLog.progressPhotoLocal || currentLog.progressPhotoUrl) && (
-            <img
-              className="photo-preview"
-              src={currentLog.progressPhotoLocal || currentLog.progressPhotoUrl}
-              alt="Progress"
-            />
-          )}
-        </Panel>
+        )}
 
-        <Panel title="Reading + Writing" code="MIND">
-          <Toggle
-            active={currentLog.readingDone}
-            label="30 minutes reading complete"
-            onClick={() => updateLog({ readingDone: !currentLog.readingDone })}
-          />
-          <label>
-            What did you read?
-            <input
-              value={currentLog.readingTitle}
-              onChange={(event) => updateLog({ readingTitle: event.target.value })}
-              placeholder="Book, chapter, idea"
-            />
-          </label>
-          <TextArea
-            label="What did you learn?"
-            value={currentLog.readingLearned}
-            onChange={(readingLearned) => updateLog({ readingLearned })}
-          />
-          <Toggle
-            active={currentLog.writingDone}
-            label="Focused writing session complete"
-            onClick={() => updateLog({ writingDone: !currentLog.writingDone })}
-          />
-          <TextArea
-            label="What did you write?"
-            value={currentLog.writingNote}
-            onChange={(writingNote) => updateLog({ writingNote })}
-          />
-        </Panel>
-      </section>
-
-      <section className="business-section">
-        <div className="section-heading">
-          <span className="section-code">OPS</span>
-          <div>
-            <h2>Business command</h2>
-            <p>No hour counting. Write proof that the empire moved.</p>
-          </div>
-        </div>
-        <div className="business-grid">
-          {(['tera', 'lensr', 'job'] as BusinessArea[]).map((area) => (
-            <BusinessProofCard
-              key={area}
-              area={area}
-              proof={currentLog.businessProofs[area]}
-              onChange={(patch) => updateBusinessProof(area, patch)}
-            />
-          ))}
-        </div>
-      </section>
-
-      <section className="control-grid">
-        <Panel title="Revenue Ops" code="CASH">
-          <RevenueForm onAdd={addRevenue} selectedDate={selectedDate} />
-          <div className="revenue-meter">
-            <span style={{ width: `${Math.min(100, (currentMonthRevenue / MONTHLY_REVENUE_GOAL) * 100)}%` }} />
-          </div>
-          <p className="hint">
-            INR {formatMoney(currentMonthRevenue)} / INR {formatMoney(MONTHLY_REVENUE_GOAL)} this month.
-          </p>
-        </Panel>
-
-        <Panel title="Daily Review" code="LOG">
-          <Toggle
-            active={currentLog.dailyReviewDone}
-            label="Review complete"
-            onClick={() => updateLog({ dailyReviewDone: !currentLog.dailyReviewDone })}
-          />
-          <TextArea
-            label="What did I learn today?"
-            value={currentLog.lessons}
-            onChange={(lessons) => updateLog({ lessons })}
-          />
-          <TextArea
-            label="How did I feel after completing my tasks?"
-            value={currentLog.felt}
-            onChange={(felt) => updateLog({ felt })}
-          />
-          <TextArea
-            label="Reason I cannot quit"
-            value={currentLog.cannotQuitReason}
-            onChange={(cannotQuitReason) => updateLog({ cannotQuitReason })}
-          />
-        </Panel>
-
-        <Panel title="Restart / Export" code="RESET">
-          <TextArea
-            label="Failure note"
-            value={currentLog.failureNote}
-            onChange={(failureNote) => updateLog({ failureNote })}
-          />
-          <div className="quick-actions">
-            <button className="danger" onClick={markRestart}>
-              Mark restart
-            </button>
-            <button onClick={exportJson}>
-              JSON
-            </button>
-            <button onClick={exportCsv}>
-              CSV
-            </button>
-          </div>
-          <p className="hint">
-            Restarts saved: {data.restarts.length}. Export keeps your data yours.
-          </p>
-        </Panel>
-      </section>
-
-      <section className="analytics-section">
-        <Panel title="Mission Analytics" code="DATA">
-          <div className="charts">
-            <div className="chart-box">
-              <h3>Last logs</h3>
-              <ResponsiveContainer width="100%" height={190}>
-                <BarChart data={data.logs.slice(0, 10).reverse()}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#26313f" />
-                  <XAxis dataKey="date" tick={{ fill: '#9aa7b5', fontSize: 11 }} />
-                  <YAxis tick={{ fill: '#9aa7b5', fontSize: 11 }} />
-                  <Tooltip contentStyle={{ background: '#101721', border: '1px solid #28394d' }} />
-                  <Bar dataKey={(log) => completionPercent(log)} fill="#e4c46a" radius={[6, 6, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+        {activeView === 'business' && (
+          <div className="business-stage">
+            <div className="section-heading">
+              <span>OPS</span>
+              <div>
+                <h2>Business command</h2>
+                <p>No hour counting. Complete all three proof blocks.</p>
+              </div>
             </div>
-            <div className="chart-box">
-              <h3>Revenue source</h3>
-              <ResponsiveContainer width="100%" height={190}>
-                <PieChart>
-                  <Pie
-                    data={revenueBySource(data.revenue)}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={48}
-                    outerRadius={78}
-                    paddingAngle={4}
-                  >
-                    {revenueBySource(data.revenue).map((entry, index) => (
-                      <Cell key={entry.name} fill={['#e4c46a', '#6cc3c0', '#e06f59', '#8fa7ff'][index]} />
-                    ))}
-                  </Pie>
-                  <Tooltip contentStyle={{ background: '#101721', border: '1px solid #28394d' }} />
-                </PieChart>
-              </ResponsiveContainer>
+            <div className="business-grid">
+              {(['tera', 'lensr', 'job'] as BusinessArea[]).map((area) => (
+                <BusinessProofCard
+                  key={area}
+                  area={area}
+                  proof={currentLog.businessProofs[area]}
+                  onChange={(patch) => updateBusinessProof(area, patch)}
+                />
+              ))}
             </div>
           </div>
-        </Panel>
+        )}
+
+        {activeView === 'money' && (
+          <div className="view-grid">
+            <Panel title="Revenue Ops" code="CASH">
+              <RevenueForm onAdd={addRevenue} selectedDate={selectedDate} />
+              <div className="meter-block">
+                <div>
+                  <span>Monthly cash received</span>
+                  <strong>INR {formatMoney(currentMonthRevenue)}</strong>
+                  <p>Target: INR {formatMoney(MONTHLY_REVENUE_GOAL)}</p>
+                </div>
+                <div className="mini-meter">
+                  <span style={{ width: `${revenuePercent}%` }} />
+                </div>
+              </div>
+            </Panel>
+
+            <Panel title="Mission Analytics" code="DATA">
+              <div className="charts">
+                <div className="chart-box">
+                  <h3>Last logs</h3>
+                  <ResponsiveContainer width="100%" height={190}>
+                    <BarChart data={data.logs.slice(0, 10).reverse()}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#2d3240" />
+                      <XAxis dataKey="date" tick={{ fill: '#aeb6c2', fontSize: 11 }} />
+                      <YAxis tick={{ fill: '#aeb6c2', fontSize: 11 }} />
+                      <Tooltip contentStyle={{ background: '#10151f', border: '1px solid #343b4b' }} />
+                      <Bar dataKey={(log) => completionPercent(log)} fill="#f4c95d" radius={[8, 8, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="chart-box">
+                  <h3>Revenue source</h3>
+                  <ResponsiveContainer width="100%" height={190}>
+                    <PieChart>
+                      <Pie
+                        data={revenueBySource(data.revenue)}
+                        dataKey="value"
+                        nameKey="name"
+                        innerRadius={48}
+                        outerRadius={78}
+                        paddingAngle={4}
+                      >
+                        {revenueBySource(data.revenue).map((entry, index) => (
+                          <Cell key={entry.name} fill={['#f4c95d', '#61d394', '#ff6b6b', '#8ea7ff'][index]} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={{ background: '#10151f', border: '1px solid #343b4b' }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </Panel>
+          </div>
+        )}
+
+        {activeView === 'review' && (
+          <div className="view-grid">
+            <Panel title="Daily Closeout" code="LOG">
+              <Toggle
+                active={currentLog.dailyReviewDone}
+                label="Review complete"
+                onClick={() => updateLog({ dailyReviewDone: !currentLog.dailyReviewDone })}
+              />
+              <TextArea
+                label="What did I learn today?"
+                value={currentLog.lessons}
+                onChange={(lessons) => updateLog({ lessons })}
+              />
+              <TextArea
+                label="How did I feel after completing my tasks?"
+                value={currentLog.felt}
+                onChange={(felt) => updateLog({ felt })}
+              />
+              <TextArea
+                label="Reason I cannot quit"
+                value={currentLog.cannotQuitReason}
+                onChange={(cannotQuitReason) => updateLog({ cannotQuitReason })}
+              />
+            </Panel>
+
+            <Panel title="Restart / Export" code="RESET">
+              <TextArea
+                label="Failure note"
+                value={currentLog.failureNote}
+                onChange={(failureNote) => updateLog({ failureNote })}
+              />
+              <div className="quick-actions">
+                <button className="danger" onClick={markRestart}>
+                  Mark restart
+                </button>
+                <button onClick={exportJson}>Export JSON</button>
+                <button onClick={exportCsv}>Export CSV</button>
+              </div>
+              <div className="empty-state">
+                Restarts saved: {data.restarts.length}. Your data stays exportable.
+              </div>
+            </Panel>
+          </div>
+        )}
       </section>
     </main>
   )
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Signal({ label, value }: { label: string; value: string }) {
   return (
-    <article className="metric">
+    <article className="signal-card">
       <span>{label}</span>
       <strong>{value}</strong>
     </article>
@@ -567,7 +648,7 @@ function Toggle({
 }) {
   return (
     <button className={active ? 'toggle active' : 'toggle'} onClick={onClick}>
-      <span>{active ? 'ON' : 'OFF'}</span>
+      <span>{active ? 'Complete' : 'Mark'}</span>
       {label}
     </button>
   )
@@ -599,10 +680,17 @@ function BusinessProofCard({
   proof: BusinessProof
   onChange: (patch: Partial<BusinessProof>) => void
 }) {
+  const complete = Boolean(proof.workedOn && proof.movedForward && proof.output && proof.nextStep)
+
   return (
-    <article className="business-card">
-      <h3>{areaLabels[area]}</h3>
-      <p>{areaDescriptions[area]}</p>
+    <article className={complete ? 'business-card complete' : 'business-card'}>
+      <div className="business-head">
+        <div>
+          <h3>{areaLabels[area]}</h3>
+          <p>{areaDescriptions[area]}</p>
+        </div>
+        <span>{complete ? 'Cleared' : 'Open'}</span>
+      </div>
       <TextArea
         label="What did I work on?"
         value={proof.workedOn}
