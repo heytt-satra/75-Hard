@@ -742,10 +742,7 @@ p {
     font-size: 1rem;
   }
 
-  .hero-controls {
-    grid-template-columns: 1fr auto;
-  }
-
+  .hero-controls,
   .field-row.two {
     grid-template-columns: 1fr;
   }
