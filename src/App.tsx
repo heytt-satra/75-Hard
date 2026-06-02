@@ -4,6 +4,8 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Line,
+  LineChart,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -20,9 +22,12 @@ import {
   coreTaskStatus,
   createDailyLog,
   dayNumberFor,
-  disciplineMessages,
+  historyEntries,
+  improvementMetrics,
   missionDateKey,
+  quoteForDate,
   todayKey,
+  type HistoryFilters,
 } from './mission'
 import {
   loadMissionData,
@@ -49,7 +54,8 @@ import type {
   RevenueType,
 } from './types'
 
-type View = 'today' | 'body' | 'mind' | 'business' | 'money' | 'review'
+type View = 'today' | 'body' | 'mind' | 'business' | 'money' | 'history' | 'progress' | 'review'
+type Task = ReturnType<typeof coreTaskStatus>[number]
 
 const initialData: MissionData = { logs: [], revenue: [], restarts: [] }
 
@@ -59,6 +65,8 @@ const views: Array<{ id: View; label: string; signal: string }> = [
   { id: 'mind', label: 'Mind', signal: 'Read + write' },
   { id: 'business', label: 'Business', signal: 'Proof' },
   { id: 'money', label: 'Money', signal: 'INR 2L' },
+  { id: 'history', label: 'History', signal: 'Timeline' },
+  { id: 'progress', label: 'Progress', signal: 'Growth' },
   { id: 'review', label: 'Review', signal: 'Close day' },
 ]
 
@@ -93,12 +101,18 @@ function App() {
   const [saving, setSaving] = useState(false)
   const [syncMessage, setSyncMessage] = useState('')
   const [activeView, setActiveView] = useState<View>('today')
+  const [showCompleted, setShowCompleted] = useState(false)
+  const [historyDate, setHistoryDate] = useState('')
+  const [historyStatus, setHistoryStatus] = useState<HistoryFilters['status']>('all')
+  const [historyQuery, setHistoryQuery] = useState('')
 
   const currentLog = useMemo(() => {
     return data.logs.find((log) => log.date === selectedDate) ?? createDailyLog(selectedDate)
   }, [data.logs, selectedDate])
 
   const taskStatus = coreTaskStatus(currentLog)
+  const openTasks = taskStatus.filter((task) => !task.done)
+  const completedTasks = taskStatus.filter((task) => task.done)
   const percent = completionPercent(currentLog)
   const dayNumber = dayNumberFor(selectedDate, data.restarts)
   const currentMonthRevenue = data.revenue
@@ -106,9 +120,14 @@ function App() {
     .reduce((total, entry) => total + Number(entry.amount || 0), 0)
   const revenuePercent = Math.min(100, Math.round((currentMonthRevenue / MONTHLY_REVENUE_GOAL) * 100))
   const waterPercent = Math.min(100, Math.round((currentLog.waterMl / currentLog.waterGoalMl) * 100))
-  const message = disciplineMessages[dayNumber % disciplineMessages.length]
+  const quote = quoteForDate(selectedDate)
   const streak = activeStreak(data)
-  const openTasks = taskStatus.filter((task) => !task.done)
+  const metrics = improvementMetrics(data)
+  const history = historyEntries(data, {
+    date: historyDate,
+    status: historyStatus,
+    query: historyQuery,
+  })
 
   useEffect(() => {
     loadMissionData().then((stored) => {
@@ -243,13 +262,22 @@ function App() {
 
   return (
     <main className="app-shell">
-      <section className={percent === 100 ? 'cockpit complete' : 'cockpit'}>
-        <div className="cockpit-bg" />
-        <div className="cockpit-copy">
+      <header className="app-header">
+        <div className="header-main">
           <p className="eyebrow">Mission 75 / Heytt OS</p>
-          <h1>Operate the day.</h1>
-          <p className="mission-line">{message}</p>
-          <div className="hero-controls">
+          <h1>Day {Math.min(dayNumber, TOTAL_DAYS)} command.</h1>
+          <blockquote>
+            "{quote.quote}"
+            <cite>{quote.author}</cite>
+          </blockquote>
+        </div>
+
+        <div className="header-panel">
+          <div className="progress-orb" style={{ '--percent': `${percent}%` } as React.CSSProperties}>
+            <strong>{percent}%</strong>
+            <span>core complete</span>
+          </div>
+          <div className="header-controls">
             <label className="date-control">
               <span>Active date</span>
               <input
@@ -264,29 +292,24 @@ function App() {
           </div>
           {syncMessage && <p className="sync-message">{syncMessage}</p>}
         </div>
+      </header>
 
-        <div className="mission-gauge">
-          <div className="gauge-ring" style={{ '--percent': `${percent}%` } as React.CSSProperties}>
-            <div>
-              <strong>{percent}%</strong>
-              <span>core</span>
-            </div>
-          </div>
-          <div className="day-readout">
-            <span>Day</span>
-            <strong>{Math.min(dayNumber, TOTAL_DAYS)}</strong>
-            <span>of {TOTAL_DAYS}</span>
-          </div>
-        </div>
-      </section>
-
-      <section className="live-strip">
+      <section className="signal-grid">
         <Signal label="Open tasks" value={openTasks.length.toString()} />
+        <Signal label="Completed" value={completedTasks.length.toString()} />
         <Signal label="Clean streak" value={streak.toString()} />
         <Signal label="Water" value={`${waterPercent}%`} />
         <Signal label="Revenue" value={`${revenuePercent}%`} />
         <Signal label="Supabase" value={isSupabaseConfigured ? 'Ready' : 'Local'} />
       </section>
+
+      <TaskSummary
+        openTasks={openTasks}
+        completedTasks={completedTasks}
+        showCompleted={showCompleted}
+        onToggleCompleted={() => setShowCompleted((value) => !value)}
+        onTaskClick={(task) => setActiveView(taskView[task.id] ?? 'today')}
+      />
 
       <nav className="mission-nav" aria-label="Mission sections">
         {views.map((view) => (
@@ -301,316 +324,708 @@ function App() {
         ))}
       </nav>
 
-      <section className="task-command">
-        {taskStatus.map((task) => (
-          <button
-            key={task.id}
-            className={task.done ? 'task-tile done' : 'task-tile'}
-            onClick={() => setActiveView(taskView[task.id] ?? 'today')}
-          >
-            <span>{task.done ? 'Done' : 'Open'}</span>
-            <strong>{task.label}</strong>
-          </button>
-        ))}
-      </section>
-
       <section className="workspace">
         {activeView === 'today' && (
-          <div className="view-grid">
-            <Panel title="Start The Day" code="CORE">
-              <div className="field-row two">
-                <label>
-                  Wake time
-                  <input
-                    type="time"
-                    value={currentLog.wakeTime}
-                    onChange={(event) => updateLog({ wakeTime: event.target.value })}
-                  />
-                </label>
-                <label>
-                  Body weight
-                  <input
-                    value={currentLog.bodyWeightKg}
-                    onChange={(event) => updateLog({ bodyWeightKg: event.target.value })}
-                    placeholder="85 kg"
-                  />
-                </label>
-              </div>
-              <div className="toggle-row">
-                <Toggle
-                  active={currentLog.foodClean}
-                  label="Food stayed clean"
-                  onClick={() => updateLog({ foodClean: !currentLog.foodClean })}
-                />
-                <Toggle
-                  active={currentLog.paused}
-                  label="Travel/sick pause"
-                  onClick={() => updateLog({ paused: !currentLog.paused })}
-                />
-              </div>
-              {currentLog.paused && (
-                <TextArea
-                  label="Pause reason"
-                  value={currentLog.pauseReason}
-                  onChange={(pauseReason) => updateLog({ pauseReason })}
-                />
-              )}
-            </Panel>
-
-            <Panel title="Hydration Control" code="H2O">
-              <div className="meter-block">
-                <div>
-                  <span>Water logged</span>
-                  <strong>{currentLog.waterMl} ml</strong>
-                  <p>Goal: {currentLog.waterGoalMl} ml</p>
-                </div>
-                <div className="mini-meter">
-                  <span style={{ width: `${waterPercent}%` }} />
-                </div>
-              </div>
-              <div className="quick-actions">
-                <button onClick={() => addWater(750)}>Add 750 ml</button>
-                <button onClick={() => addWater(1000)}>Add 1 L</button>
-                <button onClick={() => updateLog({ waterMl: 0 })}>Reset</button>
-              </div>
-              <label>
-                Water goal
-                <input
-                  type="number"
-                  value={currentLog.waterGoalMl}
-                  onChange={(event) =>
-                    updateLog({ waterGoalMl: Number(event.target.value || DEFAULT_WATER_GOAL) })
-                  }
-                />
-              </label>
-            </Panel>
-          </div>
+          <TodayView
+            log={currentLog}
+            waterPercent={waterPercent}
+            updateLog={updateLog}
+            addWater={addWater}
+          />
         )}
-
         {activeView === 'body' && (
-          <div className="view-grid">
-            <Panel title="Workout Protocol" code="BODY">
-              <div className="segmented">
-                <button
-                  className={currentLog.workoutMode === 'indoor' ? 'selected' : ''}
-                  onClick={() => updateLog({ workoutMode: 'indoor' })}
-                >
-                  Indoor protocol
-                </button>
-                <button
-                  className={currentLog.workoutMode === 'outdoor' ? 'selected' : ''}
-                  onClick={() => updateLog({ workoutMode: 'outdoor' })}
-                >
-                  Outdoor protocol
-                </button>
-              </div>
-              <div className="protocol-card">
-                {currentLog.workoutMode === 'indoor'
-                  ? '15 pushups / 50 squats / 50 crunches / 2 min skipping / 1 min plank'
-                  : '3-5 km walk or run. No overthinking. Move.'}
-              </div>
-              <Toggle
-                active={currentLog.workoutDone}
-                label="Workout complete"
-                onClick={() => updateLog({ workoutDone: !currentLog.workoutDone })}
-              />
-              <TextArea
-                label="Workout proof"
-                value={currentLog.workoutNote}
-                onChange={(workoutNote) => updateLog({ workoutNote })}
-              />
-            </Panel>
-
-            <Panel title="Progress Capture" code="PHOTO">
-              <label className="upload-tile">
-                Upload progress photo
-                <input type="file" accept="image/*" onChange={(event) => handlePhoto(event.target.files?.[0])} />
-              </label>
-              {(currentLog.progressPhotoLocal || currentLog.progressPhotoUrl) ? (
-                <img
-                  className="photo-preview"
-                  src={currentLog.progressPhotoLocal || currentLog.progressPhotoUrl}
-                  alt="Progress"
-                />
-              ) : (
-                <div className="empty-state">No photo captured for this day.</div>
-              )}
-              <TextArea
-                label="Body note"
-                value={currentLog.bodyNote}
-                onChange={(bodyNote) => updateLog({ bodyNote })}
-              />
-            </Panel>
-          </div>
+          <BodyView log={currentLog} updateLog={updateLog} handlePhoto={handlePhoto} />
         )}
-
-        {activeView === 'mind' && (
-          <div className="view-grid">
-            <Panel title="Reading Block" code="READ">
-              <Toggle
-                active={currentLog.readingDone}
-                label="30 minutes reading complete"
-                onClick={() => updateLog({ readingDone: !currentLog.readingDone })}
-              />
-              <label>
-                What did you read?
-                <input
-                  value={currentLog.readingTitle}
-                  onChange={(event) => updateLog({ readingTitle: event.target.value })}
-                  placeholder="Book, chapter, idea"
-                />
-              </label>
-              <TextArea
-                label="What did you learn?"
-                value={currentLog.readingLearned}
-                onChange={(readingLearned) => updateLog({ readingLearned })}
-              />
-            </Panel>
-
-            <Panel title="Writing Block" code="WRITE">
-              <Toggle
-                active={currentLog.writingDone}
-                label="Focused writing session complete"
-                onClick={() => updateLog({ writingDone: !currentLog.writingDone })}
-              />
-              <TextArea
-                label="What did you write?"
-                value={currentLog.writingNote}
-                onChange={(writingNote) => updateLog({ writingNote })}
-              />
-            </Panel>
-          </div>
-        )}
-
+        {activeView === 'mind' && <MindView log={currentLog} updateLog={updateLog} />}
         {activeView === 'business' && (
-          <div className="business-stage">
-            <div className="section-heading">
-              <span>OPS</span>
-              <div>
-                <h2>Business command</h2>
-                <p>No hour counting. Complete all three proof blocks.</p>
-              </div>
-            </div>
-            <div className="business-grid">
-              {(['tera', 'lensr', 'job'] as BusinessArea[]).map((area) => (
-                <BusinessProofCard
-                  key={area}
-                  area={area}
-                  proof={currentLog.businessProofs[area]}
-                  onChange={(patch) => updateBusinessProof(area, patch)}
-                />
-              ))}
-            </div>
-          </div>
+          <BusinessView log={currentLog} updateBusinessProof={updateBusinessProof} />
         )}
-
         {activeView === 'money' && (
-          <div className="view-grid">
-            <Panel title="Revenue Ops" code="CASH">
-              <RevenueForm onAdd={addRevenue} selectedDate={selectedDate} />
-              <div className="meter-block">
-                <div>
-                  <span>Monthly cash received</span>
-                  <strong>INR {formatMoney(currentMonthRevenue)}</strong>
-                  <p>Target: INR {formatMoney(MONTHLY_REVENUE_GOAL)}</p>
-                </div>
-                <div className="mini-meter">
-                  <span style={{ width: `${revenuePercent}%` }} />
-                </div>
-              </div>
-            </Panel>
-
-            <Panel title="Mission Analytics" code="DATA">
-              <div className="charts">
-                <div className="chart-box">
-                  <h3>Last logs</h3>
-                  <ResponsiveContainer width="100%" height={190}>
-                    <BarChart data={data.logs.slice(0, 10).reverse()}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#2d3240" />
-                      <XAxis dataKey="date" tick={{ fill: '#aeb6c2', fontSize: 11 }} />
-                      <YAxis tick={{ fill: '#aeb6c2', fontSize: 11 }} />
-                      <Tooltip contentStyle={{ background: '#10151f', border: '1px solid #343b4b' }} />
-                      <Bar dataKey={(log) => completionPercent(log)} fill="#f4c95d" radius={[8, 8, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-                <div className="chart-box">
-                  <h3>Revenue source</h3>
-                  <ResponsiveContainer width="100%" height={190}>
-                    <PieChart>
-                      <Pie
-                        data={revenueBySource(data.revenue)}
-                        dataKey="value"
-                        nameKey="name"
-                        innerRadius={48}
-                        outerRadius={78}
-                        paddingAngle={4}
-                      >
-                        {revenueBySource(data.revenue).map((entry, index) => (
-                          <Cell key={entry.name} fill={['#f4c95d', '#61d394', '#ff6b6b', '#8ea7ff'][index]} />
-                        ))}
-                      </Pie>
-                      <Tooltip contentStyle={{ background: '#10151f', border: '1px solid #343b4b' }} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            </Panel>
-          </div>
+          <MoneyView
+            data={data}
+            selectedDate={selectedDate}
+            currentMonthRevenue={currentMonthRevenue}
+            revenuePercent={revenuePercent}
+            addRevenue={addRevenue}
+          />
         )}
-
+        {activeView === 'history' && (
+          <HistoryView
+            data={data}
+            history={history}
+            filters={{ date: historyDate, status: historyStatus, query: historyQuery }}
+            setHistoryDate={setHistoryDate}
+            setHistoryStatus={setHistoryStatus}
+            setHistoryQuery={setHistoryQuery}
+          />
+        )}
+        {activeView === 'progress' && <ProgressView data={data} metrics={metrics} />}
         {activeView === 'review' && (
-          <div className="view-grid">
-            <Panel title="Daily Closeout" code="LOG">
-              <Toggle
-                active={currentLog.dailyReviewDone}
-                label="Review complete"
-                onClick={() => updateLog({ dailyReviewDone: !currentLog.dailyReviewDone })}
-              />
-              <TextArea
-                label="What did I learn today?"
-                value={currentLog.lessons}
-                onChange={(lessons) => updateLog({ lessons })}
-              />
-              <TextArea
-                label="How did I feel after completing my tasks?"
-                value={currentLog.felt}
-                onChange={(felt) => updateLog({ felt })}
-              />
-              <TextArea
-                label="Reason I cannot quit"
-                value={currentLog.cannotQuitReason}
-                onChange={(cannotQuitReason) => updateLog({ cannotQuitReason })}
-              />
-            </Panel>
-
-            <Panel title="Restart / Export" code="RESET">
-              <TextArea
-                label="Failure note"
-                value={currentLog.failureNote}
-                onChange={(failureNote) => updateLog({ failureNote })}
-              />
-              <div className="quick-actions">
-                <button className="danger" onClick={markRestart}>
-                  Mark restart
-                </button>
-                <button onClick={exportJson}>Export JSON</button>
-                <button onClick={exportCsv}>Export CSV</button>
-              </div>
-              <div className="empty-state">
-                Restarts saved: {data.restarts.length}. Your data stays exportable.
-              </div>
-            </Panel>
-          </div>
+          <ReviewView
+            log={currentLog}
+            restarts={data.restarts.length}
+            updateLog={updateLog}
+            markRestart={markRestart}
+            exportJson={exportJson}
+            exportCsv={exportCsv}
+          />
         )}
       </section>
     </main>
   )
 }
 
+function TaskSummary({
+  openTasks,
+  completedTasks,
+  showCompleted,
+  onToggleCompleted,
+  onTaskClick,
+}: {
+  openTasks: Task[]
+  completedTasks: Task[]
+  showCompleted: boolean
+  onToggleCompleted: () => void
+  onTaskClick: (task: Task) => void
+}) {
+  return (
+    <section className="task-summary">
+      <div className="summary-head">
+        <div>
+          <p className="eyebrow">Task flow</p>
+          <h2>Finish what is open. Hide what is done.</h2>
+        </div>
+        <button className="ghost-action" onClick={onToggleCompleted}>
+          {showCompleted ? 'Hide completed' : `Show completed (${completedTasks.length})`}
+        </button>
+      </div>
+
+      <div className="open-task-row">
+        {openTasks.length ? (
+          openTasks.map((task) => (
+            <button className="task-chip" key={task.id} onClick={() => onTaskClick(task)}>
+              <span>Open</span>
+              {task.label}
+            </button>
+          ))
+        ) : (
+          <div className="all-clear">All core tasks are complete for this day.</div>
+        )}
+      </div>
+
+      {showCompleted && (
+        <div className="completed-row">
+          {completedTasks.length ? (
+            completedTasks.map((task) => (
+              <div className="completed-chip" key={task.id}>
+                <span>Done</span>
+                {task.label}
+              </div>
+            ))
+          ) : (
+            <div className="empty-state">Nothing completed yet.</div>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function TodayView({
+  log,
+  waterPercent,
+  updateLog,
+  addWater,
+}: {
+  log: DailyLog
+  waterPercent: number
+  updateLog: (patch: Partial<DailyLog>) => Promise<void>
+  addWater: (ml: number) => Promise<void>
+}) {
+  return (
+    <div className="view-grid">
+      <Panel title="Start The Day" code="CORE">
+        <div className="field-row two">
+          <label>
+            Wake time
+            <input
+              type="time"
+              value={log.wakeTime}
+              onChange={(event) => updateLog({ wakeTime: event.target.value })}
+            />
+          </label>
+          <label>
+            Body weight
+            <input
+              value={log.bodyWeightKg}
+              onChange={(event) => updateLog({ bodyWeightKg: event.target.value })}
+              placeholder="85 kg"
+            />
+          </label>
+        </div>
+        <div className="toggle-row">
+          <Toggle
+            active={log.foodClean}
+            label="Food stayed clean"
+            onClick={() => updateLog({ foodClean: !log.foodClean })}
+          />
+          <Toggle
+            active={log.paused}
+            label="Travel/sick pause"
+            onClick={() => updateLog({ paused: !log.paused })}
+          />
+        </div>
+        {log.paused && (
+          <TextArea
+            label="Pause reason"
+            value={log.pauseReason}
+            onChange={(pauseReason) => updateLog({ pauseReason })}
+          />
+        )}
+      </Panel>
+
+      <Panel title="Hydration Control" code="H2O">
+        <MeterBlock
+          label="Water logged"
+          value={`${log.waterMl} ml`}
+          detail={`Goal: ${log.waterGoalMl} ml`}
+          percent={waterPercent}
+        />
+        <div className="quick-actions">
+          <button onClick={() => addWater(750)}>Add 750 ml</button>
+          <button onClick={() => addWater(1000)}>Add 1 L</button>
+          <button onClick={() => updateLog({ waterMl: 0 })}>Reset</button>
+        </div>
+        <label>
+          Water goal
+          <input
+            type="number"
+            value={log.waterGoalMl}
+            onChange={(event) =>
+              updateLog({ waterGoalMl: Number(event.target.value || DEFAULT_WATER_GOAL) })
+            }
+          />
+        </label>
+      </Panel>
+    </div>
+  )
+}
+
+function BodyView({
+  log,
+  updateLog,
+  handlePhoto,
+}: {
+  log: DailyLog
+  updateLog: (patch: Partial<DailyLog>) => Promise<void>
+  handlePhoto: (file: File | undefined) => Promise<void>
+}) {
+  return (
+    <div className="view-grid">
+      <Panel title="Workout Protocol" code="BODY">
+        <div className="segmented">
+          <button
+            className={log.workoutMode === 'indoor' ? 'selected' : ''}
+            onClick={() => updateLog({ workoutMode: 'indoor' })}
+          >
+            Indoor protocol
+          </button>
+          <button
+            className={log.workoutMode === 'outdoor' ? 'selected' : ''}
+            onClick={() => updateLog({ workoutMode: 'outdoor' })}
+          >
+            Outdoor protocol
+          </button>
+        </div>
+        <div className="protocol-card">
+          {log.workoutMode === 'indoor'
+            ? '15 pushups / 50 squats / 50 crunches / 2 min skipping / 1 min plank'
+            : '3-5 km walk or run. No overthinking. Move.'}
+        </div>
+        <Toggle
+          active={log.workoutDone}
+          label="Workout complete"
+          onClick={() => updateLog({ workoutDone: !log.workoutDone })}
+        />
+        <TextArea
+          label="Workout proof"
+          value={log.workoutNote}
+          onChange={(workoutNote) => updateLog({ workoutNote })}
+        />
+      </Panel>
+
+      <Panel title="Progress Capture" code="PHOTO">
+        <label className="upload-tile">
+          Upload progress photo
+          <input type="file" accept="image/*" onChange={(event) => handlePhoto(event.target.files?.[0])} />
+        </label>
+        {log.progressPhotoLocal || log.progressPhotoUrl ? (
+          <img
+            className="photo-preview"
+            src={log.progressPhotoLocal || log.progressPhotoUrl}
+            alt="Progress"
+          />
+        ) : (
+          <div className="empty-state">No photo captured for this day.</div>
+        )}
+        <TextArea
+          label="Body note"
+          value={log.bodyNote}
+          onChange={(bodyNote) => updateLog({ bodyNote })}
+        />
+      </Panel>
+    </div>
+  )
+}
+
+function MindView({
+  log,
+  updateLog,
+}: {
+  log: DailyLog
+  updateLog: (patch: Partial<DailyLog>) => Promise<void>
+}) {
+  return (
+    <div className="view-grid">
+      <Panel title="Reading Block" code="READ">
+        <Toggle
+          active={log.readingDone}
+          label="30 minutes reading complete"
+          onClick={() => updateLog({ readingDone: !log.readingDone })}
+        />
+        <label>
+          What did you read?
+          <input
+            value={log.readingTitle}
+            onChange={(event) => updateLog({ readingTitle: event.target.value })}
+            placeholder="Book, chapter, idea"
+          />
+        </label>
+        <TextArea
+          label="What did you learn?"
+          value={log.readingLearned}
+          onChange={(readingLearned) => updateLog({ readingLearned })}
+        />
+      </Panel>
+
+      <Panel title="Writing Block" code="WRITE">
+        <Toggle
+          active={log.writingDone}
+          label="Focused writing session complete"
+          onClick={() => updateLog({ writingDone: !log.writingDone })}
+        />
+        <TextArea
+          label="What did you write?"
+          value={log.writingNote}
+          onChange={(writingNote) => updateLog({ writingNote })}
+        />
+      </Panel>
+    </div>
+  )
+}
+
+function BusinessView({
+  log,
+  updateBusinessProof,
+}: {
+  log: DailyLog
+  updateBusinessProof: (area: BusinessArea, patch: Partial<BusinessProof>) => Promise<void>
+}) {
+  return (
+    <div className="business-stage">
+      <div className="section-heading">
+        <span>OPS</span>
+        <div>
+          <h2>Business command</h2>
+          <p>No hour counting. Complete all three proof blocks.</p>
+        </div>
+      </div>
+      <div className="business-grid">
+        {(['tera', 'lensr', 'job'] as BusinessArea[]).map((area) => (
+          <BusinessProofCard
+            key={area}
+            area={area}
+            proof={log.businessProofs[area]}
+            onChange={(patch) => updateBusinessProof(area, patch)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function MoneyView({
+  data,
+  selectedDate,
+  currentMonthRevenue,
+  revenuePercent,
+  addRevenue,
+}: {
+  data: MissionData
+  selectedDate: string
+  currentMonthRevenue: number
+  revenuePercent: number
+  addRevenue: (entry: RevenueEntry) => Promise<void>
+}) {
+  return (
+    <div className="view-grid">
+      <Panel title="Revenue Ops" code="CASH">
+        <RevenueForm onAdd={addRevenue} selectedDate={selectedDate} />
+        <MeterBlock
+          label="Monthly cash received"
+          value={`INR ${formatMoney(currentMonthRevenue)}`}
+          detail={`Target: INR ${formatMoney(MONTHLY_REVENUE_GOAL)}`}
+          percent={revenuePercent}
+        />
+      </Panel>
+
+      <Panel title="Revenue Source" code="DATA">
+        <div className="chart-box compact-chart">
+          <ResponsiveContainer width="100%" height={230}>
+            <PieChart>
+              <Pie
+                data={revenueBySource(data.revenue)}
+                dataKey="value"
+                nameKey="name"
+                innerRadius={56}
+                outerRadius={86}
+                paddingAngle={4}
+              >
+                {revenueBySource(data.revenue).map((entry, index) => (
+                  <Cell key={entry.name} fill={['#4f46e5', '#10b981', '#f97316', '#64748b'][index]} />
+                ))}
+              </Pie>
+              <Tooltip />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+      </Panel>
+    </div>
+  )
+}
+
+function HistoryView({
+  data,
+  history,
+  filters,
+  setHistoryDate,
+  setHistoryStatus,
+  setHistoryQuery,
+}: {
+  data: MissionData
+  history: ReturnType<typeof historyEntries>
+  filters: HistoryFilters
+  setHistoryDate: (date: string) => void
+  setHistoryStatus: (status: HistoryFilters['status']) => void
+  setHistoryQuery: (query: string) => void
+}) {
+  return (
+    <div className="history-shell">
+      <Panel title="History Timeline" code="HIST">
+        <div className="history-filters">
+          <label>
+            Specific date
+            <input
+              type="date"
+              value={filters.date}
+              onChange={(event) => setHistoryDate(event.target.value)}
+            />
+          </label>
+          <label>
+            Status
+            <select
+              value={filters.status}
+              onChange={(event) => setHistoryStatus(event.target.value as HistoryFilters['status'])}
+            >
+              <option value="all">All</option>
+              <option value="complete">Complete</option>
+              <option value="incomplete">Incomplete</option>
+              <option value="paused">Paused</option>
+              <option value="failed">Failed</option>
+            </select>
+          </label>
+          <label>
+            Search notes
+            <input
+              value={filters.query}
+              onChange={(event) => setHistoryQuery(event.target.value)}
+              placeholder="Search proof, notes, reading..."
+            />
+          </label>
+          <button
+            className="ghost-action"
+            onClick={() => {
+              setHistoryDate('')
+              setHistoryStatus('all')
+              setHistoryQuery('')
+            }}
+          >
+            Clear filters
+          </button>
+        </div>
+      </Panel>
+
+      <div className="history-list">
+        {history.length ? (
+          history.map((entry) => (
+            <HistoryCard
+              key={entry.log.date}
+              entry={entry}
+              dayNumber={dayNumberFor(entry.log.date, data.restarts)}
+            />
+          ))
+        ) : (
+          <div className="empty-state large">No history found for this filter.</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function HistoryCard({
+  entry,
+  dayNumber,
+}: {
+  entry: ReturnType<typeof historyEntries>[number]
+  dayNumber: number
+}) {
+  const { log, revenue, restarts, percent, counts } = entry
+  return (
+    <article className="history-card">
+      <div className="history-card-head">
+        <div>
+          <p className="eyebrow">{formatDate(log.date)}</p>
+          <h3>Day {dayNumber}</h3>
+        </div>
+        <div className="history-percent">{percent}%</div>
+      </div>
+
+      <div className="history-stats">
+        <span>{counts.completedCount} done</span>
+        <span>{counts.openCount} open</span>
+        <span>{log.waterMl}/{log.waterGoalMl} ml</span>
+        <span>{log.foodClean ? 'Clean food' : 'Food open'}</span>
+      </div>
+
+      <div className="history-sections">
+        <HistoryBlock title="Body" lines={[log.workoutNote, log.bodyWeightKg && `Weight: ${log.bodyWeightKg}`, log.bodyNote]} />
+        <HistoryBlock title="Mind" lines={[log.readingTitle, log.readingLearned, log.writingNote]} />
+        <HistoryBlock
+          title="Business"
+          lines={[
+            log.businessProofs.tera.output && `Tera: ${log.businessProofs.tera.output}`,
+            log.businessProofs.lensr.output && `Lensr: ${log.businessProofs.lensr.output}`,
+            log.businessProofs.job.output && `Job: ${log.businessProofs.job.output}`,
+          ]}
+        />
+        <HistoryBlock title="Review" lines={[log.lessons, log.felt, log.cannotQuitReason]} />
+      </div>
+
+      {(log.progressPhotoLocal || log.progressPhotoUrl) && (
+        <img
+          className="history-photo"
+          src={log.progressPhotoLocal || log.progressPhotoUrl}
+          alt={`Progress for ${log.date}`}
+        />
+      )}
+
+      {revenue.length > 0 && (
+        <div className="revenue-history">
+          <h4>Revenue</h4>
+          {revenue.map((entry) => (
+            <p key={entry.id}>
+              {entry.source} / {entry.type} / {entry.status} / INR {formatMoney(entry.amount)}
+              {entry.notes ? ` - ${entry.notes}` : ''}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {(log.paused || log.failed || restarts.length > 0) && (
+        <div className="alert-strip">
+          {log.paused && <span>Paused: {log.pauseReason || 'No note'}</span>}
+          {log.failed && <span>Failed: {log.failureNote || 'No note'}</span>}
+          {restarts.map((restart) => (
+            <span key={restart.id}>Restart: {restart.failedTask}</span>
+          ))}
+        </div>
+      )}
+    </article>
+  )
+}
+
+function ProgressView({
+  data,
+  metrics,
+}: {
+  data: MissionData
+  metrics: ReturnType<typeof improvementMetrics>
+}) {
+  const summary =
+    data.logs.length === 0
+      ? 'Start logging daily proof and this section will turn into your transformation record.'
+      : `Since Day 1, you have logged ${data.logs.length} days, completed ${metrics.cleanDays} clean days, finished ${metrics.workouts} workouts, and recorded INR ${formatMoney(metrics.totalRevenueWon)} won.`
+
+  return (
+    <div className="progress-shell">
+      <section className="progress-score-grid">
+        <ScoreCard label="Avg completion" value={`${metrics.completionAverage}%`} />
+        <ScoreCard label="Best streak" value={metrics.bestStreak.toString()} />
+        <ScoreCard label="Clean days" value={metrics.cleanDays.toString()} />
+        <ScoreCard label="Workouts" value={metrics.workouts.toString()} />
+        <ScoreCard label="Reading days" value={metrics.readingDays.toString()} />
+        <ScoreCard label="Writing days" value={metrics.writingDays.toString()} />
+        <ScoreCard label="Business proof" value={metrics.businessProofDays.toString()} />
+        <ScoreCard label="Revenue won" value={`INR ${formatMoney(metrics.totalRevenueWon)}`} />
+        <ScoreCard
+          label="Weight change"
+          value={metrics.bodyWeightChange === null ? 'No data' : `${metrics.bodyWeightChange} kg`}
+        />
+      </section>
+
+      <Panel title="Since Day 1" code="GROW">
+        <p className="narrative">{summary}</p>
+      </Panel>
+
+      <div className="progress-charts">
+        <ChartPanel title="Completion Over Time">
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={metrics.completionChart}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis dataKey="date" tick={{ fill: '#64748b', fontSize: 11 }} />
+              <YAxis tick={{ fill: '#64748b', fontSize: 11 }} />
+              <Tooltip />
+              <Bar dataKey="completion" fill="#4f46e5" radius={[8, 8, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartPanel>
+
+        <ChartPanel title="Water Intake">
+          <ResponsiveContainer width="100%" height={250}>
+            <LineChart data={metrics.waterChart}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis dataKey="date" tick={{ fill: '#64748b', fontSize: 11 }} />
+              <YAxis tick={{ fill: '#64748b', fontSize: 11 }} />
+              <Tooltip />
+              <Line type="monotone" dataKey="water" stroke="#0891b2" strokeWidth={3} dot={false} />
+              <Line type="monotone" dataKey="goal" stroke="#94a3b8" strokeDasharray="4 4" dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartPanel>
+
+        <ChartPanel title="Revenue By Source">
+          <ResponsiveContainer width="100%" height={250}>
+            <PieChart>
+              <Pie
+                data={revenueBySource(data.revenue)}
+                dataKey="value"
+                nameKey="name"
+                innerRadius={54}
+                outerRadius={88}
+                paddingAngle={4}
+              >
+                {revenueBySource(data.revenue).map((entry, index) => (
+                  <Cell key={entry.name} fill={['#4f46e5', '#10b981', '#f97316', '#64748b'][index]} />
+                ))}
+              </Pie>
+              <Tooltip />
+            </PieChart>
+          </ResponsiveContainer>
+        </ChartPanel>
+
+        <ChartPanel title="Body Weight Trend">
+          {metrics.weightChart.length ? (
+            <ResponsiveContainer width="100%" height={250}>
+              <LineChart data={metrics.weightChart}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <XAxis dataKey="date" tick={{ fill: '#64748b', fontSize: 11 }} />
+                <YAxis tick={{ fill: '#64748b', fontSize: 11 }} />
+                <Tooltip />
+                <Line type="monotone" dataKey="value" stroke="#f97316" strokeWidth={3} />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="empty-state">Add body weight logs to see this trend.</div>
+          )}
+        </ChartPanel>
+      </div>
+    </div>
+  )
+}
+
+function ReviewView({
+  log,
+  restarts,
+  updateLog,
+  markRestart,
+  exportJson,
+  exportCsv,
+}: {
+  log: DailyLog
+  restarts: number
+  updateLog: (patch: Partial<DailyLog>) => Promise<void>
+  markRestart: () => Promise<void>
+  exportJson: () => void
+  exportCsv: () => void
+}) {
+  return (
+    <div className="view-grid">
+      <Panel title="Daily Closeout" code="LOG">
+        <Toggle
+          active={log.dailyReviewDone}
+          label="Review complete"
+          onClick={() => updateLog({ dailyReviewDone: !log.dailyReviewDone })}
+        />
+        <TextArea
+          label="What did I learn today?"
+          value={log.lessons}
+          onChange={(lessons) => updateLog({ lessons })}
+        />
+        <TextArea
+          label="How did I feel after completing my tasks?"
+          value={log.felt}
+          onChange={(felt) => updateLog({ felt })}
+        />
+        <TextArea
+          label="Reason I cannot quit"
+          value={log.cannotQuitReason}
+          onChange={(cannotQuitReason) => updateLog({ cannotQuitReason })}
+        />
+      </Panel>
+
+      <Panel title="Restart / Export" code="RESET">
+        <TextArea
+          label="Failure note"
+          value={log.failureNote}
+          onChange={(failureNote) => updateLog({ failureNote })}
+        />
+        <div className="quick-actions">
+          <button className="danger" onClick={markRestart}>
+            Mark restart
+          </button>
+          <button onClick={exportJson}>Export JSON</button>
+          <button onClick={exportCsv}>Export CSV</button>
+        </div>
+        <div className="empty-state">
+          Restarts saved: {restarts}. Your data stays exportable.
+        </div>
+      </Panel>
+    </div>
+  )
+}
+
 function Signal({ label, value }: { label: string; value: string }) {
   return (
     <article className="signal-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </article>
+  )
+}
+
+function ScoreCard({ label, value }: { label: string; value: string }) {
+  return (
+    <article className="score-card">
       <span>{label}</span>
       <strong>{value}</strong>
     </article>
@@ -634,6 +1049,40 @@ function Panel({
       </div>
       {children}
     </section>
+  )
+}
+
+function ChartPanel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="chart-panel">
+      <h3>{title}</h3>
+      {children}
+    </section>
+  )
+}
+
+function MeterBlock({
+  label,
+  value,
+  detail,
+  percent,
+}: {
+  label: string
+  value: string
+  detail: string
+  percent: number
+}) {
+  return (
+    <div className="meter-block">
+      <div>
+        <span>{label}</span>
+        <strong>{value}</strong>
+        <p>{detail}</p>
+      </div>
+      <div className="mini-meter">
+        <span style={{ width: `${percent}%` }} />
+      </div>
+    </div>
   )
 }
 
@@ -668,6 +1117,16 @@ function TextArea({
       {label}
       <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} />
     </label>
+  )
+}
+
+function HistoryBlock({ title, lines }: { title: string; lines: Array<string | false> }) {
+  const visible = lines.filter(Boolean)
+  return (
+    <div className="history-block">
+      <h4>{title}</h4>
+      {visible.length ? visible.map((line, index) => <p key={`${title}-${index}`}>{line}</p>) : <p>No entry.</p>}
+    </div>
   )
 }
 
@@ -810,6 +1269,14 @@ function revenueBySource(entries: RevenueEntry[]) {
 
 function formatMoney(value: number) {
   return new Intl.NumberFormat('en-IN').format(value)
+}
+
+function formatDate(date: string) {
+  return new Intl.DateTimeFormat('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  }).format(new Date(`${date}T00:00:00`))
 }
 
 function csvCell(value: unknown) {
