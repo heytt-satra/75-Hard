@@ -295,6 +295,15 @@ blockquote cite {
   font-weight: 850;
 }
 
+.sync-message.syncing {
+  color: var(--indigo);
+}
+
+.sync-message.offline,
+.sync-message.error {
+  color: var(--red);
+}
+
 .signal-grid {
   display: grid;
   grid-template-columns: repeat(6, 1fr);

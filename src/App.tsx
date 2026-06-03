@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Bar,
   BarChart,
@@ -30,16 +30,20 @@ import {
   type HistoryFilters,
 } from './mission'
 import {
+  hasUnsyncedMissionData,
   loadMissionData,
+  markMissionDataSynced,
+  mergeMissionData,
+  persistMissionData,
   saveDailyLog,
   saveRestart,
   saveRevenueEntry,
 } from './storage'
 import {
+  fetchCloudMissionData,
   isSupabaseConfigured,
-  syncDailyLog,
-  syncRestartEvent,
-  syncRevenueEntry,
+  pushMissionData,
+  subscribeToCloudChanges,
   uploadProgressPhoto,
 } from './supabase'
 import type {
@@ -56,6 +60,7 @@ import type {
 
 type View = 'today' | 'body' | 'mind' | 'business' | 'money' | 'history' | 'progress' | 'review'
 type Task = ReturnType<typeof coreTaskStatus>[number]
+type CloudSyncState = 'local' | 'syncing' | 'synced' | 'offline' | 'error'
 
 const initialData: MissionData = { logs: [], revenue: [], restarts: [] }
 
@@ -99,12 +104,18 @@ function App() {
   const [data, setData] = useState<MissionData>(initialData)
   const [selectedDate, setSelectedDate] = useState(missionDateKey())
   const [saving, setSaving] = useState(false)
-  const [syncMessage, setSyncMessage] = useState('')
+  const [syncMessage, setSyncMessage] = useState('Preparing cloud sync')
+  const [cloudSyncState, setCloudSyncState] = useState<CloudSyncState>(
+    isSupabaseConfigured ? 'syncing' : 'local',
+  )
   const [activeView, setActiveView] = useState<View>('today')
   const [showCompleted, setShowCompleted] = useState(false)
   const [historyDate, setHistoryDate] = useState('')
   const [historyStatus, setHistoryStatus] = useState<HistoryFilters['status']>('all')
   const [historyQuery, setHistoryQuery] = useState('')
+  const hasLoadedRef = useRef(false)
+  const syncInFlightRef = useRef(false)
+  const pendingSyncRef = useRef(false)
 
   const currentLog = useMemo(() => {
     return data.logs.find((log) => log.date === selectedDate) ?? createDailyLog(selectedDate)
@@ -128,18 +139,100 @@ function App() {
     status: historyStatus,
     query: historyQuery,
   })
+  const cloudLabel = cloudSyncLabel(cloudSyncState)
+
+  const runCloudSync = useCallback(async (mode: 'startup' | 'auto' | 'manual' | 'remote' | 'poll') => {
+    if (!isSupabaseConfigured) {
+      setCloudSyncState('local')
+      setSyncMessage('Local-only mode')
+      return
+    }
+
+    if (!navigator.onLine) {
+      setCloudSyncState('offline')
+      setSyncMessage('Offline changes queued')
+      return
+    }
+
+    if (syncInFlightRef.current) {
+      pendingSyncRef.current = true
+      return
+    }
+
+    syncInFlightRef.current = true
+    pendingSyncRef.current = false
+    setCloudSyncState('syncing')
+    if (mode === 'manual') setSaving(true)
+
+    try {
+      const localData = await loadMissionData()
+      const cloudResult = await fetchCloudMissionData()
+      const mergedData = cloudResult.ok && cloudResult.data
+        ? mergeMissionData(localData, cloudResult.data)
+        : localData
+      const pushResult = await pushMissionData(mergedData)
+
+      if (!cloudResult.ok && !pushResult.ok) {
+        throw new Error(pushResult.message || cloudResult.message)
+      }
+
+      const nextData = pushResult.ok ? markMissionDataSynced(mergedData) : mergedData
+      await persistMissionData(nextData)
+      setData(nextData)
+      setCloudSyncState(pushResult.ok ? 'synced' : 'error')
+      setSyncMessage(pushResult.ok ? `Synced ${formatSyncTime()}` : pushResult.message)
+    } catch (error) {
+      setCloudSyncState('error')
+      setSyncMessage(error instanceof Error ? error.message : 'Cloud sync failed')
+    } finally {
+      syncInFlightRef.current = false
+      if (mode === 'manual') setSaving(false)
+      if (pendingSyncRef.current) {
+        pendingSyncRef.current = false
+        window.setTimeout(() => void runCloudSync('auto'), 250)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     loadMissionData().then((stored) => {
-      if (stored.logs.length === 0) {
-        const firstLog = createDailyLog(missionDateKey())
-        setData({ ...stored, logs: [firstLog] })
-        saveDailyLog(firstLog)
-        return
-      }
       setData(stored)
+      hasLoadedRef.current = true
+      void runCloudSync('startup')
     })
-  }, [])
+  }, [runCloudSync])
+
+  useEffect(() => {
+    if (!hasLoadedRef.current || !isSupabaseConfigured || !hasUnsyncedMissionData(data)) return
+    const timer = window.setTimeout(() => void runCloudSync('auto'), 1100)
+    return () => window.clearTimeout(timer)
+  }, [data, runCloudSync])
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) return undefined
+
+    const unsubscribe = subscribeToCloudChanges(() => void runCloudSync('remote'))
+    const pollTimer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void runCloudSync('poll')
+    }, 25_000)
+    const handleOnline = () => void runCloudSync('auto')
+    const handleFocus = () => void runCloudSync('poll')
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void runCloudSync('poll')
+    }
+
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      unsubscribe()
+      window.clearInterval(pollTimer)
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [runCloudSync])
 
   const updateLog = async (patch: Partial<DailyLog>) => {
     const nextLog: DailyLog = {
@@ -187,23 +280,15 @@ function App() {
       date: selectedDate,
       reason: currentLog.failureNote || 'Core non-negotiable missed',
       failedTask,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'local',
     }
     setData((prev) => ({ ...prev, restarts: [restart, ...prev.restarts] }))
     await saveRestart(restart)
-    await syncRestartEvent(restart)
     await updateLog({ failed: true })
   }
 
-  const syncNow = async () => {
-    setSaving(true)
-    const logResult = await syncDailyLog(currentLog)
-    const revenueResults = await Promise.all(data.revenue.map((entry) => syncRevenueEntry(entry)))
-    const restartResults = await Promise.all(data.restarts.map((restart) => syncRestartEvent(restart)))
-    const failedRevenue = revenueResults.find((result) => !result.ok)
-    const failedRestart = restartResults.find((result) => !result.ok)
-    setSyncMessage(failedRevenue?.message ?? failedRestart?.message ?? logResult.message)
-    setSaving(false)
-  }
+  const syncNow = () => void runCloudSync('manual')
 
   const handlePhoto = async (file: File | undefined) => {
     if (!file) return
@@ -287,10 +372,10 @@ function App() {
               />
             </label>
             <button className="primary-action" onClick={syncNow} disabled={saving}>
-              {saving ? 'Syncing' : 'Sync Supabase'}
+              {saving ? 'Syncing' : 'Sync Cloud'}
             </button>
           </div>
-          {syncMessage && <p className="sync-message">{syncMessage}</p>}
+          {syncMessage && <p className={`sync-message ${cloudSyncState}`}>{syncMessage}</p>}
         </div>
       </header>
 
@@ -300,7 +385,7 @@ function App() {
         <Signal label="Clean streak" value={streak.toString()} />
         <Signal label="Water" value={`${waterPercent}%`} />
         <Signal label="Revenue" value={`${revenuePercent}%`} />
-        <Signal label="Supabase" value={isSupabaseConfigured ? 'Ready' : 'Local'} />
+        <Signal label="Cloud" value={cloudLabel} />
       </section>
 
       <TaskSummary
@@ -1277,6 +1362,21 @@ function formatDate(date: string) {
     month: 'short',
     year: 'numeric',
   }).format(new Date(`${date}T00:00:00`))
+}
+
+function formatSyncTime() {
+  return new Intl.DateTimeFormat('en-IN', {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date())
+}
+
+function cloudSyncLabel(state: CloudSyncState) {
+  if (state === 'syncing') return 'Syncing'
+  if (state === 'synced') return 'Live'
+  if (state === 'offline') return 'Queued'
+  if (state === 'error') return 'Check'
+  return 'Local'
 }
 
 function csvCell(value: unknown) {

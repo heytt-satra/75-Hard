@@ -60,3 +60,27 @@ for all
 to anon
 using (bucket_id = 'progress-photos')
 with check (bucket_id = 'progress-photos');
+
+do $$
+begin
+  alter publication supabase_realtime add table public.daily_logs;
+exception
+  when duplicate_object then null;
+  when undefined_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.revenue_entries;
+exception
+  when duplicate_object then null;
+  when undefined_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.restart_events;
+exception
+  when duplicate_object then null;
+  when undefined_object then null;
+end $$;

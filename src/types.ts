@@ -64,6 +64,8 @@ export type RestartEvent = {
   date: string
   reason: string
   failedTask: string
+  updatedAt: string
+  syncStatus: 'local' | 'synced' | 'error'
 }
 
 export type MissionData = {
