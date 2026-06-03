@@ -1,7 +1,13 @@
 import { createClient } from '@supabase/supabase-js'
-import type { DailyLog, RestartEvent, RevenueEntry } from './types'
+import type { BusinessPipelineItem, DailyLog, DeviceStatus, RestartEvent, RevenueEntry } from './types'
 import type { MissionData } from './types'
-import { normalizeDailyLog, normalizeRestartEvent, normalizeRevenueEntry, sortMissionData } from './storage'
+import {
+  normalizeDailyLog,
+  normalizePipelineItem,
+  normalizeRestartEvent,
+  normalizeRevenueEntry,
+  sortMissionData,
+} from './storage'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey =
@@ -66,18 +72,36 @@ export const syncRestartEvent = async (restart: RestartEvent) => {
   return error ? { ok: false, message: error.message } : { ok: true, message: 'Synced' }
 }
 
+export const syncPipelineItem = async (item: BusinessPipelineItem) => {
+  if (!supabase) return { ok: false, message: 'Supabase env keys missing' }
+
+  const syncedItem = normalizePipelineItem(item, 'synced')
+  const { error } = await supabase.from('business_pipeline').upsert({
+    id: syncedItem.id,
+    area: syncedItem.area,
+    stage: syncedItem.stage,
+    value: syncedItem.value,
+    payload: syncedItem,
+    updated_at: syncedItem.updatedAt,
+  })
+
+  return error ? { ok: false, message: error.message } : { ok: true, message: 'Synced' }
+}
+
 export const fetchCloudMissionData = async () => {
   if (!supabase) {
     return { ok: false as const, message: 'Supabase env keys missing', data: null }
   }
 
-  const [dailyLogs, revenueEntries, restartEvents] = await Promise.all([
+  const [dailyLogs, revenueEntries, restartEvents, pipelineItems] = await Promise.all([
     supabase.from('daily_logs').select('id, log_date, payload, updated_at'),
     supabase.from('revenue_entries').select('id, entry_date, payload, updated_at'),
     supabase.from('restart_events').select('id, restart_date, reason, failed_task, payload, updated_at'),
+    supabase.from('business_pipeline').select('id, payload, updated_at'),
   ])
 
-  const error = dailyLogs.error ?? revenueEntries.error ?? restartEvents.error
+  const pipelineError = isMissingTable(pipelineItems.error) ? null : pipelineItems.error
+  const error = dailyLogs.error ?? revenueEntries.error ?? restartEvents.error ?? pipelineError
   if (error) {
     return { ok: false as const, message: error.message, data: null }
   }
@@ -89,6 +113,7 @@ export const fetchCloudMissionData = async () => {
       logs: (dailyLogs.data ?? []).map((row) => cloudDailyLog(row)),
       revenue: (revenueEntries.data ?? []).map((row) => cloudRevenueEntry(row)),
       restarts: (restartEvents.data ?? []).map((row) => cloudRestartEvent(row)),
+      pipeline: (pipelineItems.error ? [] : (pipelineItems.data ?? [])).map((row) => cloudPipelineItem(row)),
     }),
   }
 }
@@ -100,6 +125,7 @@ export const pushMissionData = async (data: MissionData) => {
     ...data.logs.map((log) => syncDailyLog(log)),
     ...data.revenue.map((entry) => syncRevenueEntry(entry)),
     ...data.restarts.map((restart) => syncRestartEvent(restart)),
+    ...data.pipeline.map((item) => syncPipelineItem(item)),
   ])
   const failed = results.find((result) => !result.ok)
 
@@ -120,11 +146,47 @@ export const subscribeToCloudChanges = (onChange: () => void) => {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_logs' }, notify)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'revenue_entries' }, notify)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'restart_events' }, notify)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'business_pipeline' }, notify)
     .subscribe()
 
   return () => {
     window.clearTimeout(debounceTimer)
     void supabase.removeChannel(channel)
+  }
+}
+
+export const upsertDeviceStatus = async (device: DeviceStatus) => {
+  if (!supabase) return { ok: false, message: 'Supabase env keys missing' }
+
+  const { error } = await supabase.from('device_status').upsert({
+    id: device.id,
+    name: device.name,
+    sync_state: device.syncState,
+    last_seen_at: device.lastSeenAt,
+  })
+
+  return error ? { ok: false, message: error.message } : { ok: true, message: 'Device synced' }
+}
+
+export const fetchDeviceStatuses = async () => {
+  if (!supabase) return { ok: false as const, message: 'Supabase env keys missing', data: [] }
+
+  const { data, error } = await supabase
+    .from('device_status')
+    .select('id, name, sync_state, last_seen_at')
+    .order('last_seen_at', { ascending: false })
+
+  if (error) return { ok: false as const, message: error.message, data: [] }
+
+  return {
+    ok: true as const,
+    message: 'Devices loaded',
+    data: (data ?? []).map((device) => ({
+      id: device.id,
+      name: device.name,
+      syncState: device.sync_state,
+      lastSeenAt: device.last_seen_at,
+    })) as DeviceStatus[],
   }
 }
 
@@ -215,4 +277,25 @@ const cloudRestartEvent = (row: {
     },
     'synced',
   )
+}
+
+const cloudPipelineItem = (row: {
+  id: string
+  payload: unknown
+  updated_at: string
+}) => {
+  const payload = row.payload as BusinessPipelineItem
+  return normalizePipelineItem(
+    {
+      ...payload,
+      id: payload.id ?? row.id,
+      updatedAt: payload.updatedAt ?? row.updated_at,
+    },
+    'synced',
+  )
+}
+
+const isMissingTable = (error: { message?: string; code?: string } | null) => {
+  if (!error) return false
+  return error.code === '42P01' || error.message?.toLowerCase().includes('does not exist')
 }

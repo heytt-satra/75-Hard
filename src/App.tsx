@@ -25,8 +25,12 @@ import {
   historyEntries,
   improvementMetrics,
   missionDateKey,
+  nextNudge,
+  pipelineStages,
   quoteForDate,
+  streakReason,
   todayKey,
+  weeklyReview,
   type HistoryFilters,
 } from './mission'
 import {
@@ -36,21 +40,29 @@ import {
   mergeMissionData,
   persistMissionData,
   saveDailyLog,
+  savePipelineItem,
   saveRestart,
   saveRevenueEntry,
 } from './storage'
 import {
   fetchCloudMissionData,
+  fetchDeviceStatuses,
   isSupabaseConfigured,
   pushMissionData,
   subscribeToCloudChanges,
+  upsertDeviceStatus,
   uploadProgressPhoto,
 } from './supabase'
 import type {
   BusinessArea,
+  BusinessPipelineItem,
   BusinessProof,
   DailyLog,
+  DayMode,
+  DeviceStatus,
+  FocusArea,
   MissionData,
+  ProofAttachment,
   RestartEvent,
   RevenueEntry,
   RevenueSource,
@@ -62,7 +74,7 @@ type View = 'today' | 'body' | 'mind' | 'business' | 'money' | 'history' | 'prog
 type Task = ReturnType<typeof coreTaskStatus>[number]
 type CloudSyncState = 'local' | 'syncing' | 'synced' | 'offline' | 'error'
 
-const initialData: MissionData = { logs: [], revenue: [], restarts: [] }
+const initialData: MissionData = { logs: [], revenue: [], restarts: [], pipeline: [] }
 
 const views: Array<{ id: View; label: string; signal: string }> = [
   { id: 'today', label: 'Today', signal: 'Core' },
@@ -113,9 +125,13 @@ function App() {
   const [historyDate, setHistoryDate] = useState('')
   const [historyStatus, setHistoryStatus] = useState<HistoryFilters['status']>('all')
   const [historyQuery, setHistoryQuery] = useState('')
+  const [devices, setDevices] = useState<DeviceStatus[]>([])
+  const [lastCloudChange, setLastCloudChange] = useState('')
   const hasLoadedRef = useRef(false)
   const syncInFlightRef = useRef(false)
   const pendingSyncRef = useRef(false)
+  const deviceIdRef = useRef(getDeviceId())
+  const deviceNameRef = useRef(getDeviceName())
 
   const currentLog = useMemo(() => {
     return data.logs.find((log) => log.date === selectedDate) ?? createDailyLog(selectedDate)
@@ -134,12 +150,15 @@ function App() {
   const quote = quoteForDate(selectedDate)
   const streak = activeStreak(data)
   const metrics = improvementMetrics(data)
+  const weekly = weeklyReview(data)
   const history = historyEntries(data, {
     date: historyDate,
     status: historyStatus,
     query: historyQuery,
   })
   const cloudLabel = cloudSyncLabel(cloudSyncState)
+  const currentTask = openTasks[0]
+  const isDayLocked = Boolean(currentLog.lockedAt)
 
   const runCloudSync = useCallback(async (mode: 'startup' | 'auto' | 'manual' | 'remote' | 'poll') => {
     if (!isSupabaseConfigured) {
@@ -180,7 +199,19 @@ function App() {
       await persistMissionData(nextData)
       setData(nextData)
       setCloudSyncState(pushResult.ok ? 'synced' : 'error')
+      setLastCloudChange(mode === 'remote' ? `Pulled remote changes ${formatSyncTime()}` : '')
       setSyncMessage(pushResult.ok ? `Synced ${formatSyncTime()}` : pushResult.message)
+      if (pushResult.ok) {
+        const device: DeviceStatus = {
+          id: deviceIdRef.current,
+          name: deviceNameRef.current,
+          syncState: 'synced',
+          lastSeenAt: new Date().toISOString(),
+        }
+        void upsertDeviceStatus(device)
+        const deviceResult = await fetchDeviceStatuses()
+        if (deviceResult.ok) setDevices(deviceResult.data)
+      }
     } catch (error) {
       setCloudSyncState('error')
       setSyncMessage(error instanceof Error ? error.message : 'Cloud sync failed')
@@ -264,12 +295,82 @@ function App() {
 
   const addWater = (ml: number) => updateLog({ waterMl: currentLog.waterMl + ml })
 
+  const applyDayMode = (dayMode: DayMode) => {
+    const patchByMode: Record<DayMode, Partial<DailyLog>> = {
+      standard: { dayMode, paused: false, waterGoalMl: DEFAULT_WATER_GOAL },
+      'deep-work': { dayMode, paused: false, waterGoalMl: DEFAULT_WATER_GOAL },
+      travel: { dayMode, paused: true, pauseReason: currentLog.pauseReason || 'Travel day planned' },
+      'low-energy': { dayMode, paused: false, workoutMode: 'indoor', waterGoalMl: DEFAULT_WATER_GOAL },
+    }
+    return updateLog(patchByMode[dayMode])
+  }
+
+  const toggleDayLock = () => {
+    return updateLog({ lockedAt: currentLog.lockedAt ? '' : new Date().toISOString() })
+  }
+
+  const addFocusSession = (session: Omit<DailyLog['focusSessions'][number], 'id' | 'createdAt'>) => {
+    return updateLog({
+      focusSessions: [
+        {
+          ...session,
+          id: crypto.randomUUID(),
+          createdAt: new Date().toISOString(),
+        },
+        ...currentLog.focusSessions,
+      ],
+    })
+  }
+
+  const addProofAttachment = (attachment: Omit<ProofAttachment, 'id' | 'createdAt'>) => {
+    return updateLog({
+      proofAttachments: [
+        {
+          ...attachment,
+          id: crypto.randomUUID(),
+          createdAt: new Date().toISOString(),
+        },
+        ...currentLog.proofAttachments,
+      ],
+    })
+  }
+
   const addRevenue = async (entry: RevenueEntry) => {
     setData((prev) => ({
       ...prev,
       revenue: [entry, ...prev.revenue].sort((a, b) => b.date.localeCompare(a.date)),
     }))
     await saveRevenueEntry(entry)
+  }
+
+  const savePipeline = async (item: BusinessPipelineItem) => {
+    setData((prev) => ({
+      ...prev,
+      pipeline: [item, ...prev.pipeline.filter((existing) => existing.id !== item.id)].sort((a, b) =>
+        b.updatedAt.localeCompare(a.updatedAt),
+      ),
+    }))
+    await savePipelineItem(item)
+  }
+
+  const addPipelineItem = async (item: Omit<BusinessPipelineItem, 'id' | 'createdAt' | 'updatedAt' | 'syncStatus'>) => {
+    const now = new Date().toISOString()
+    await savePipeline({
+      ...item,
+      id: crypto.randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: 'local',
+    })
+  }
+
+  const updatePipelineItem = async (item: BusinessPipelineItem, patch: Partial<BusinessPipelineItem>) => {
+    await savePipeline({
+      ...item,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+      syncStatus: 'local',
+    })
   }
 
   const markRestart = async () => {
@@ -345,6 +446,24 @@ function App() {
     )
   }
 
+  const exportWeeklyReport = () => {
+    const report = [
+      '<!doctype html><html><head><meta charset="utf-8"><title>Mission 75 Weekly Report</title>',
+      '<style>body{font-family:Aptos,Segoe UI,sans-serif;padding:32px;color:#172033}h1{font-size:34px}section{margin:20px 0;padding:18px;border:1px solid #ded6ca;border-radius:10px}li{margin:8px 0}</style>',
+      '</head><body>',
+      '<h1>Mission 75 Weekly Report</h1>',
+      `<p>Generated ${formatDate(todayKey())}. Average completion ${weekly.averageCompletion}%. Clean days ${weekly.cleanDays}/${weekly.daysReviewed}.</p>`,
+      '<section><h2>Last 7 Days</h2><ul>',
+      ...data.logs.slice(0, 7).map((log) => `<li><strong>${formatDate(log.date)}</strong>: ${completionPercent(log)}%, ${log.waterMl} ml water, ${escapeHtml(log.lessons || log.felt || 'No review note')}</li>`),
+      '</ul></section>',
+      '<section><h2>Business Pipeline</h2><ul>',
+      ...data.pipeline.map((item) => `<li><strong>${escapeHtml(item.title)}</strong>: ${item.area} / ${item.stage} / INR ${formatMoney(item.value)} / ${escapeHtml(item.nextAction)}</li>`),
+      '</ul></section>',
+      '</body></html>',
+    ].join('')
+    downloadFile(`mission-75-weekly-report-${todayKey()}.html`, report, 'text/html')
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -388,6 +507,17 @@ function App() {
         <Signal label="Cloud" value={cloudLabel} />
       </section>
 
+      <MissionBrief
+        task={currentTask}
+        locked={isDayLocked}
+        log={currentLog}
+        devices={devices}
+        cloudState={cloudSyncState}
+        cloudMessage={lastCloudChange || syncMessage}
+        onTaskClick={(task) => setActiveView(taskView[task.id] ?? 'today')}
+        onToggleLock={toggleDayLock}
+      />
+
       <TaskSummary
         openTasks={openTasks}
         completedTasks={completedTasks}
@@ -416,14 +546,24 @@ function App() {
             waterPercent={waterPercent}
             updateLog={updateLog}
             addWater={addWater}
+            applyDayMode={applyDayMode}
           />
         )}
         {activeView === 'body' && (
-          <BodyView log={currentLog} updateLog={updateLog} handlePhoto={handlePhoto} />
+          <BodyView data={data} log={currentLog} updateLog={updateLog} handlePhoto={handlePhoto} />
         )}
-        {activeView === 'mind' && <MindView log={currentLog} updateLog={updateLog} />}
+        {activeView === 'mind' && (
+          <MindView log={currentLog} updateLog={updateLog} addFocusSession={addFocusSession} />
+        )}
         {activeView === 'business' && (
-          <BusinessView log={currentLog} updateBusinessProof={updateBusinessProof} />
+          <BusinessView
+            log={currentLog}
+            pipeline={data.pipeline}
+            updateBusinessProof={updateBusinessProof}
+            addPipelineItem={addPipelineItem}
+            updatePipelineItem={updatePipelineItem}
+            addProofAttachment={addProofAttachment}
+          />
         )}
         {activeView === 'money' && (
           <MoneyView
@@ -444,7 +584,7 @@ function App() {
             setHistoryQuery={setHistoryQuery}
           />
         )}
-        {activeView === 'progress' && <ProgressView data={data} metrics={metrics} />}
+        {activeView === 'progress' && <ProgressView data={data} metrics={metrics} weekly={weekly} />}
         {activeView === 'review' && (
           <ReviewView
             log={currentLog}
@@ -453,10 +593,74 @@ function App() {
             markRestart={markRestart}
             exportJson={exportJson}
             exportCsv={exportCsv}
+            exportWeeklyReport={exportWeeklyReport}
           />
         )}
       </section>
     </main>
+  )
+}
+
+function MissionBrief({
+  task,
+  locked,
+  log,
+  devices,
+  cloudState,
+  cloudMessage,
+  onTaskClick,
+  onToggleLock,
+}: {
+  task: Task | undefined
+  locked: boolean
+  log: DailyLog
+  devices: DeviceStatus[]
+  cloudState: CloudSyncState
+  cloudMessage: string
+  onTaskClick: (task: Task) => void
+  onToggleLock: () => Promise<void>
+}) {
+  return (
+    <section className="mission-brief">
+      <div className="brief-primary">
+        <p className="eyebrow">{locked ? 'Day locked' : 'Current focus'}</p>
+        <h2>{task ? task.label : 'Clean day secured'}</h2>
+        <p>{streakReason(log)}</p>
+        <div className="quick-actions">
+          {task && (
+            <button className="primary-action" onClick={() => onTaskClick(task)}>
+              Open task
+            </button>
+          )}
+          <button className="ghost-action" onClick={onToggleLock}>
+            {locked ? 'Unlock day' : 'Lock day'}
+          </button>
+        </div>
+      </div>
+      <div className="brief-secondary">
+        <div className={`sync-pill ${cloudState}`}>
+          <span>Cloud</span>
+          <strong>{cloudSyncLabel(cloudState)}</strong>
+          <p>{cloudMessage}</p>
+        </div>
+        <div className="device-list">
+          <span>Devices</span>
+          {devices.length ? (
+            devices.slice(0, 3).map((device) => (
+              <p key={device.id}>
+                {device.name} / {formatRelativeTime(device.lastSeenAt)}
+              </p>
+            ))
+          ) : (
+            <p>This device is ready.</p>
+          )}
+        </div>
+      </div>
+      <div className="brief-nudge">
+        <span>Next nudge</span>
+        <strong>{nextNudge(log)}</strong>
+      </div>
+    </section>
   )
 }
 
@@ -521,15 +725,28 @@ function TodayView({
   waterPercent,
   updateLog,
   addWater,
+  applyDayMode,
 }: {
   log: DailyLog
   waterPercent: number
   updateLog: (patch: Partial<DailyLog>) => Promise<void>
   addWater: (ml: number) => Promise<void>
+  applyDayMode: (mode: DayMode) => Promise<void>
 }) {
   return (
     <div className="view-grid">
       <Panel title="Start The Day" code="CORE">
+        <div className="template-row">
+          {(['standard', 'deep-work', 'travel', 'low-energy'] as DayMode[]).map((mode) => (
+            <button
+              key={mode}
+              className={log.dayMode === mode ? 'template-chip active' : 'template-chip'}
+              onClick={() => applyDayMode(mode)}
+            >
+              {dayModeLabel(mode)}
+            </button>
+          ))}
+        </div>
         <div className="field-row two">
           <label>
             Wake time
@@ -567,6 +784,7 @@ function TodayView({
             onChange={(pauseReason) => updateLog({ pauseReason })}
           />
         )}
+        {log.lockedAt && <div className="all-clear">Locked {formatRelativeTime(log.lockedAt)}.</div>}
       </Panel>
 
       <Panel title="Hydration Control" code="H2O">
@@ -597,14 +815,18 @@ function TodayView({
 }
 
 function BodyView({
+  data,
   log,
   updateLog,
   handlePhoto,
 }: {
+  data: MissionData
   log: DailyLog
   updateLog: (patch: Partial<DailyLog>) => Promise<void>
   handlePhoto: (file: File | undefined) => Promise<void>
 }) {
+  const photoLogs = data.logs.filter((entry) => entry.progressPhotoLocal || entry.progressPhotoUrl)
+
   return (
     <div className="view-grid">
       <Panel title="Workout Protocol" code="BODY">
@@ -659,6 +881,21 @@ function BodyView({
           onChange={(bodyNote) => updateLog({ bodyNote })}
         />
       </Panel>
+
+      <Panel title="Progress Gallery" code="COMPARE">
+        {photoLogs.length ? (
+          <div className="photo-grid">
+            {photoLogs.slice(0, 6).map((entry) => (
+              <figure key={entry.date}>
+                <img src={entry.progressPhotoLocal || entry.progressPhotoUrl} alt={`Progress ${entry.date}`} />
+                <figcaption>{formatDate(entry.date)}</figcaption>
+              </figure>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state">Add progress photos and this becomes your comparison wall.</div>
+        )}
+      </Panel>
     </div>
   )
 }
@@ -666,9 +903,11 @@ function BodyView({
 function MindView({
   log,
   updateLog,
+  addFocusSession,
 }: {
   log: DailyLog
   updateLog: (patch: Partial<DailyLog>) => Promise<void>
+  addFocusSession: (session: Omit<DailyLog['focusSessions'][number], 'id' | 'createdAt'>) => Promise<void>
 }) {
   return (
     <div className="view-grid">
@@ -705,16 +944,26 @@ function MindView({
           onChange={(writingNote) => updateLog({ writingNote })}
         />
       </Panel>
+
+      <FocusSessionPanel log={log} onAdd={addFocusSession} />
     </div>
   )
 }
 
 function BusinessView({
   log,
+  pipeline,
   updateBusinessProof,
+  addPipelineItem,
+  updatePipelineItem,
+  addProofAttachment,
 }: {
   log: DailyLog
+  pipeline: BusinessPipelineItem[]
   updateBusinessProof: (area: BusinessArea, patch: Partial<BusinessProof>) => Promise<void>
+  addPipelineItem: (item: Omit<BusinessPipelineItem, 'id' | 'createdAt' | 'updatedAt' | 'syncStatus'>) => Promise<void>
+  updatePipelineItem: (item: BusinessPipelineItem, patch: Partial<BusinessPipelineItem>) => Promise<void>
+  addProofAttachment: (attachment: Omit<ProofAttachment, 'id' | 'createdAt'>) => Promise<void>
 }) {
   return (
     <div className="business-stage">
@@ -735,6 +984,8 @@ function BusinessView({
           />
         ))}
       </div>
+      <BusinessPipeline pipeline={pipeline} onAdd={addPipelineItem} onUpdate={updatePipelineItem} />
+      <ProofVault log={log} onAdd={addProofAttachment} />
     </div>
   )
 }
@@ -752,6 +1003,8 @@ function MoneyView({
   revenuePercent: number
   addRevenue: (entry: RevenueEntry) => Promise<void>
 }) {
+  const forecast = incomeForecast(selectedDate, currentMonthRevenue, data.pipeline)
+
   return (
     <div className="view-grid">
       <Panel title="Revenue Ops" code="CASH">
@@ -762,6 +1015,15 @@ function MoneyView({
           detail={`Target: INR ${formatMoney(MONTHLY_REVENUE_GOAL)}`}
           percent={revenuePercent}
         />
+      </Panel>
+
+      <Panel title="Income Forecast" code="PACE">
+        <div className="forecast-grid">
+          <ScoreCard label="Month pace" value={forecast.paceLabel} />
+          <ScoreCard label="Pipeline open" value={`INR ${formatMoney(forecast.pipelineOpen)}`} />
+          <ScoreCard label="Gap left" value={`INR ${formatMoney(forecast.gap)}`} />
+        </div>
+        <p className="narrative">{forecast.message}</p>
       </Panel>
 
       <Panel title="Revenue Source" code="DATA">
@@ -942,9 +1204,11 @@ function HistoryCard({
 function ProgressView({
   data,
   metrics,
+  weekly,
 }: {
   data: MissionData
   metrics: ReturnType<typeof improvementMetrics>
+  weekly: ReturnType<typeof weeklyReview>
 }) {
   const summary =
     data.logs.length === 0
@@ -961,7 +1225,11 @@ function ProgressView({
         <ScoreCard label="Reading days" value={metrics.readingDays.toString()} />
         <ScoreCard label="Writing days" value={metrics.writingDays.toString()} />
         <ScoreCard label="Business proof" value={metrics.businessProofDays.toString()} />
+        <ScoreCard label="Focus minutes" value={metrics.totalFocusMinutes.toString()} />
+        <ScoreCard label="Avg energy" value={`${metrics.averageEnergy}/10`} />
+        <ScoreCard label="Avg clarity" value={`${metrics.averageClarity}/10`} />
         <ScoreCard label="Revenue won" value={`INR ${formatMoney(metrics.totalRevenueWon)}`} />
+        <ScoreCard label="Pipeline open" value={`INR ${formatMoney(metrics.pipelineValue)}`} />
         <ScoreCard
           label="Weight change"
           value={metrics.bodyWeightChange === null ? 'No data' : `${metrics.bodyWeightChange} kg`}
@@ -970,6 +1238,15 @@ function ProgressView({
 
       <Panel title="Since Day 1" code="GROW">
         <p className="narrative">{summary}</p>
+      </Panel>
+
+      <Panel title="Weekly Review" code="WEEK">
+        <div className="forecast-grid">
+          <ScoreCard label="7-day avg" value={`${weekly.averageCompletion}%`} />
+          <ScoreCard label="Clean days" value={`${weekly.cleanDays}/${weekly.daysReviewed}`} />
+          <ScoreCard label="Focus minutes" value={weekly.focusMinutes.toString()} />
+        </div>
+        <p className="narrative">Most common blocker: {weekly.topMiss}.</p>
       </Panel>
 
       <div className="progress-charts">
@@ -1033,6 +1310,30 @@ function ProgressView({
             <div className="empty-state">Add body weight logs to see this trend.</div>
           )}
         </ChartPanel>
+
+        <ChartPanel title="Consistency By Weekday">
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={metrics.completedByWeekday}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis dataKey="day" tick={{ fill: '#64748b', fontSize: 11 }} />
+              <YAxis tick={{ fill: '#64748b', fontSize: 11 }} />
+              <Tooltip />
+              <Bar dataKey="completion" fill="#0f9f8f" radius={[8, 8, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartPanel>
+
+        <ChartPanel title="Logging Rhythm">
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={metrics.updateHours}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis dataKey="hour" tick={{ fill: '#64748b', fontSize: 11 }} />
+              <YAxis tick={{ fill: '#64748b', fontSize: 11 }} />
+              <Tooltip />
+              <Bar dataKey="logs" fill="#f97316" radius={[8, 8, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartPanel>
       </div>
     </div>
   )
@@ -1045,6 +1346,7 @@ function ReviewView({
   markRestart,
   exportJson,
   exportCsv,
+  exportWeeklyReport,
 }: {
   log: DailyLog
   restarts: number
@@ -1052,6 +1354,7 @@ function ReviewView({
   markRestart: () => Promise<void>
   exportJson: () => void
   exportCsv: () => void
+  exportWeeklyReport: () => void
 }) {
   return (
     <div className="view-grid">
@@ -1076,6 +1379,18 @@ function ReviewView({
           value={log.cannotQuitReason}
           onChange={(cannotQuitReason) => updateLog({ cannotQuitReason })}
         />
+        <div className="field-row two">
+          <RangeField
+            label="Energy"
+            value={log.energyLevel}
+            onChange={(energyLevel) => updateLog({ energyLevel })}
+          />
+          <RangeField
+            label="Mental clarity"
+            value={log.mentalClarity}
+            onChange={(mentalClarity) => updateLog({ mentalClarity })}
+          />
+        </div>
       </Panel>
 
       <Panel title="Restart / Export" code="RESET">
@@ -1090,6 +1405,7 @@ function ReviewView({
           </button>
           <button onClick={exportJson}>Export JSON</button>
           <button onClick={exportCsv}>Export CSV</button>
+          <button onClick={exportWeeklyReport}>Weekly report</button>
         </div>
         <div className="empty-state">
           Restarts saved: {restarts}. Your data stays exportable.
@@ -1202,6 +1518,247 @@ function TextArea({
       {label}
       <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} />
     </label>
+  )
+}
+
+function RangeField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: number
+  onChange: (value: number) => void
+}) {
+  return (
+    <label>
+      {label}: {value}/10
+      <input
+        type="range"
+        min="1"
+        max="10"
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+    </label>
+  )
+}
+
+function FocusSessionPanel({
+  log,
+  onAdd,
+}: {
+  log: DailyLog
+  onAdd: (session: Omit<DailyLog['focusSessions'][number], 'id' | 'createdAt'>) => Promise<void>
+}) {
+  const [area, setArea] = useState<FocusArea>('business')
+  const [minutes, setMinutes] = useState('30')
+  const [note, setNote] = useState('')
+
+  const submit = async () => {
+    await onAdd({ area, minutes: Number(minutes || 0), note })
+    setNote('')
+  }
+
+  return (
+    <Panel title="Focus Sessions" code="FOCUS">
+      <div className="field-row two">
+        <label>
+          Area
+          <select value={area} onChange={(event) => setArea(event.target.value as FocusArea)}>
+            <option value="business">Business</option>
+            <option value="job">Job search</option>
+            <option value="reading">Reading</option>
+            <option value="writing">Writing</option>
+            <option value="fitness">Fitness</option>
+          </select>
+        </label>
+        <label>
+          Minutes
+          <input value={minutes} type="number" onChange={(event) => setMinutes(event.target.value)} />
+        </label>
+      </div>
+      <TextArea label="Proof note" value={note} onChange={setNote} />
+      <button className="primary-action" onClick={submit}>
+        Log focus session
+      </button>
+      <div className="session-list">
+        {log.focusSessions.length ? (
+          log.focusSessions.slice(0, 4).map((session) => (
+            <p key={session.id}>
+              {session.area} / {session.minutes} min / {session.note || 'No note'}
+            </p>
+          ))
+        ) : (
+          <p>No focus sessions logged today.</p>
+        )}
+      </div>
+    </Panel>
+  )
+}
+
+function BusinessPipeline({
+  pipeline,
+  onAdd,
+  onUpdate,
+}: {
+  pipeline: BusinessPipelineItem[]
+  onAdd: (item: Omit<BusinessPipelineItem, 'id' | 'createdAt' | 'updatedAt' | 'syncStatus'>) => Promise<void>
+  onUpdate: (item: BusinessPipelineItem, patch: Partial<BusinessPipelineItem>) => Promise<void>
+}) {
+  const [area, setArea] = useState<BusinessArea>('tera')
+  const [title, setTitle] = useState('')
+  const [value, setValue] = useState('')
+  const [nextAction, setNextAction] = useState('')
+
+  const submit = async () => {
+    if (!title.trim()) return
+    await onAdd({
+      area,
+      title,
+      stage: 'lead',
+      value: Number(value || 0),
+      nextAction,
+      followUpDate: '',
+      notes: '',
+    })
+    setTitle('')
+    setValue('')
+    setNextAction('')
+  }
+
+  return (
+    <section className="pipeline-stage">
+      <div className="section-heading">
+        <span>PIPE</span>
+        <div>
+          <h2>Business pipeline</h2>
+          <p>Track the work that can become cash, bookings, or internship momentum.</p>
+        </div>
+      </div>
+      <div className="pipeline-form">
+        <label>
+          Area
+          <select value={area} onChange={(event) => setArea(event.target.value as BusinessArea)}>
+            <option value="tera">Tera</option>
+            <option value="lensr">Lensr</option>
+            <option value="job">Internship / job</option>
+          </select>
+        </label>
+        <label>
+          Opportunity
+          <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Client, booking, referral..." />
+        </label>
+        <label>
+          Value
+          <input value={value} type="number" onChange={(event) => setValue(event.target.value)} />
+        </label>
+        <label>
+          Next action
+          <input value={nextAction} onChange={(event) => setNextAction(event.target.value)} />
+        </label>
+        <button className="primary-action" onClick={submit}>
+          Add
+        </button>
+      </div>
+      <div className="pipeline-board">
+        {pipelineStages.map((stage) => (
+          <div className="pipeline-column" key={stage}>
+            <h3>{stageLabel(stage)}</h3>
+            {pipeline.filter((item) => item.stage === stage).length ? (
+              pipeline
+                .filter((item) => item.stage === stage)
+                .map((item) => (
+                  <article className="pipeline-card" key={item.id}>
+                    <strong>{item.title}</strong>
+                    <span>{areaLabels[item.area]}</span>
+                    <p>INR {formatMoney(item.value)} / {item.nextAction || 'No next action'}</p>
+                    <select value={item.stage} onChange={(event) => onUpdate(item, { stage: event.target.value as BusinessPipelineItem['stage'] })}>
+                      {pipelineStages.map((option) => (
+                        <option key={option} value={option}>
+                          {stageLabel(option)}
+                        </option>
+                      ))}
+                    </select>
+                  </article>
+                ))
+            ) : (
+              <p className="muted-line">Empty</p>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function ProofVault({
+  log,
+  onAdd,
+}: {
+  log: DailyLog
+  onAdd: (attachment: Omit<ProofAttachment, 'id' | 'createdAt'>) => Promise<void>
+}) {
+  const [area, setArea] = useState<ProofAttachment['area']>('tera')
+  const [label, setLabel] = useState('')
+  const [url, setUrl] = useState('')
+  const [note, setNote] = useState('')
+
+  const submit = async () => {
+    if (!label.trim() && !url.trim()) return
+    await onAdd({ area, label, url, note })
+    setLabel('')
+    setUrl('')
+    setNote('')
+  }
+
+  return (
+    <section className="proof-vault">
+      <div className="section-heading">
+        <span>PROOF</span>
+        <div>
+          <h2>Proof vault</h2>
+          <p>Attach links, screenshots URLs, docs, or delivery proof for the day.</p>
+        </div>
+      </div>
+      <div className="pipeline-form">
+        <label>
+          Area
+          <select value={area} onChange={(event) => setArea(event.target.value as ProofAttachment['area'])}>
+            <option value="tera">Tera</option>
+            <option value="lensr">Lensr</option>
+            <option value="job">Job</option>
+            <option value="reading">Reading</option>
+            <option value="writing">Writing</option>
+            <option value="fitness">Fitness</option>
+            <option value="review">Review</option>
+          </select>
+        </label>
+        <label>
+          Label
+          <input value={label} onChange={(event) => setLabel(event.target.value)} />
+        </label>
+        <label>
+          Link
+          <input value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://..." />
+        </label>
+        <button className="primary-action" onClick={submit}>
+          Attach
+        </button>
+      </div>
+      <TextArea label="Attachment note" value={note} onChange={setNote} />
+      <div className="attachment-list">
+        {log.proofAttachments.length ? (
+          log.proofAttachments.map((attachment) => (
+            <p key={attachment.id}>
+              {attachment.area} / {attachment.label || attachment.url} {attachment.note ? `/ ${attachment.note}` : ''}
+            </p>
+          ))
+        ) : (
+          <p>No proof links attached today.</p>
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -1377,6 +1934,83 @@ function cloudSyncLabel(state: CloudSyncState) {
   if (state === 'offline') return 'Queued'
   if (state === 'error') return 'Check'
   return 'Local'
+}
+
+function dayModeLabel(mode: DayMode) {
+  const labels: Record<DayMode, string> = {
+    standard: 'Standard',
+    'deep-work': 'Deep work',
+    travel: 'Travel',
+    'low-energy': 'Low energy',
+  }
+  return labels[mode]
+}
+
+function stageLabel(stage: BusinessPipelineItem['stage']) {
+  return stage
+    .split('-')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function incomeForecast(date: string, currentMonthRevenue: number, pipeline: BusinessPipelineItem[]) {
+  const current = new Date(`${date}T00:00:00`)
+  const monthEnd = new Date(current.getFullYear(), current.getMonth() + 1, 0)
+  const dayOfMonth = current.getDate()
+  const daysInMonth = monthEnd.getDate()
+  const expectedByToday = Math.round((MONTHLY_REVENUE_GOAL / daysInMonth) * dayOfMonth)
+  const pipelineOpen = pipeline
+    .filter((item) => item.stage !== 'lost' && item.stage !== 'paid')
+    .reduce((sum, item) => sum + Number(item.value || 0), 0)
+  const gap = Math.max(0, MONTHLY_REVENUE_GOAL - currentMonthRevenue)
+  const paceLabel = currentMonthRevenue >= expectedByToday ? 'Ahead' : 'Behind'
+  const message =
+    paceLabel === 'Ahead'
+      ? `You are ahead of monthly pace by INR ${formatMoney(currentMonthRevenue - expectedByToday)}.`
+      : `You need INR ${formatMoney(gap)} more this month. Open pipeline covers ${Math.round(
+          Math.min(100, (pipelineOpen / Math.max(1, gap)) * 100),
+        )}% of the gap.`
+
+  return { paceLabel, pipelineOpen, gap, message }
+}
+
+function getDeviceId() {
+  const key = 'mission-75-device-id'
+  const existing = localStorage.getItem(key)
+  if (existing) return existing
+  const next = crypto.randomUUID()
+  localStorage.setItem(key, next)
+  return next
+}
+
+function getDeviceName() {
+  const key = 'mission-75-device-name'
+  const existing = localStorage.getItem(key)
+  if (existing) return existing
+  const platform = navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Laptop'
+  const next = `${platform} ${new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`
+  localStorage.setItem(key, next)
+  return next
+}
+
+function formatRelativeTime(value: string) {
+  if (!value) return 'never'
+  const diff = Date.now() - new Date(value).getTime()
+  const minutes = Math.max(0, Math.round(diff / 60_000))
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours} hr ago`
+  return `${Math.round(hours / 24)} days ago`
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;')
 }
 
 function csvCell(value: unknown) {

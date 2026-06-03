@@ -114,9 +114,12 @@ blockquote {
 
 .header-main,
 .header-panel,
+.mission-brief,
 .task-summary,
 .panel,
 .business-stage,
+.pipeline-stage,
+.proof-vault,
 .history-card,
 .chart-panel,
 .score-card,
@@ -324,11 +327,99 @@ blockquote cite {
   line-height: 1;
 }
 
+.mission-brief {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
+  gap: 0.85rem;
+  padding: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.brief-primary,
+.brief-secondary,
+.brief-nudge {
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.brief-primary h2 {
+  color: var(--ink);
+  font-size: 1.25rem;
+}
+
+.brief-primary p,
+.brief-nudge strong,
+.device-list p,
+.sync-pill p,
+.session-list p,
+.attachment-list p,
+.muted-line {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.brief-secondary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sync-pill,
+.device-list,
+.brief-nudge,
+.session-list,
+.attachment-list {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 0.8rem;
+}
+
+.sync-pill span,
+.device-list span,
+.brief-nudge span {
+  color: var(--indigo);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.sync-pill strong {
+  display: block;
+  color: var(--ink);
+  font-size: 1.2rem;
+}
+
+.sync-pill.error strong,
+.sync-pill.offline strong {
+  color: var(--red);
+}
+
 .task-summary {
   display: grid;
   gap: 0.85rem;
   padding: 1rem;
   margin-bottom: 0.85rem;
+}
+
+.template-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.template-chip {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #ffffff;
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.template-chip.active {
+  border-color: transparent;
+  background: var(--ink);
+  color: #ffffff;
 }
 
 .summary-head {
@@ -653,9 +744,100 @@ blockquote cite {
   border: 1px solid var(--line);
 }
 
+.photo-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.photo-grid figure {
+  margin: 0;
+  min-width: 0;
+}
+
+.photo-grid img {
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.photo-grid figcaption {
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 850;
+}
+
 .business-stage {
   display: grid;
   gap: 1rem;
+}
+
+.pipeline-stage,
+.proof-vault {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.pipeline-form {
+  display: grid;
+  grid-template-columns: 150px minmax(180px, 1fr) 130px minmax(180px, 1fr) max-content;
+  gap: 0.65rem;
+  align-items: end;
+}
+
+.pipeline-board {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(170px, 1fr));
+  gap: 0.65rem;
+  overflow-x: auto;
+  padding-bottom: 0.2rem;
+}
+
+.pipeline-column {
+  display: grid;
+  align-content: start;
+  gap: 0.55rem;
+  min-height: 170px;
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.64);
+}
+
+.pipeline-column h3 {
+  color: var(--ink);
+  font-size: 0.86rem;
+  text-transform: uppercase;
+}
+
+.pipeline-card {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.72rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.pipeline-card span {
+  color: var(--teal);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.pipeline-card p {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.forecast-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
 }
 
 .section-heading {
@@ -791,6 +973,7 @@ blockquote cite {
 
 @media (max-width: 980px) {
   .app-header,
+  .mission-brief,
   .view-grid,
   .business-grid,
   .history-sections,
@@ -799,9 +982,14 @@ blockquote cite {
     grid-template-columns: 1fr;
   }
 
+  .pipeline-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .signal-grid,
   .mission-nav,
-  .progress-score-grid {
+  .progress-score-grid,
+  .forecast-grid {
     grid-template-columns: repeat(3, 1fr);
   }
 
@@ -831,9 +1019,17 @@ blockquote cite {
   .signal-grid,
   .mission-nav,
   .progress-score-grid,
+  .forecast-grid,
   .history-filters,
+  .template-row,
   .field-row.two {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .brief-secondary,
+  .pipeline-form,
+  .photo-grid {
+    grid-template-columns: 1fr;
   }
 
   .history-filters label:nth-child(3),

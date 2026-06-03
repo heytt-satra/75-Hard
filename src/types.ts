@@ -3,6 +3,16 @@ export type WorkoutMode = 'indoor' | 'outdoor'
 export type RevenueSource = 'Tera' | 'Lensr' | 'Internship' | 'Other'
 export type RevenueType = 'lead' | 'outreach' | 'booking' | 'invoice' | 'cash'
 export type RevenueStatus = 'open' | 'won' | 'lost' | 'follow-up'
+export type DayMode = 'standard' | 'deep-work' | 'travel' | 'low-energy'
+export type FocusArea = 'reading' | 'writing' | 'business' | 'fitness' | 'job'
+export type BusinessPipelineStage =
+  | 'lead'
+  | 'outreach'
+  | 'proposal'
+  | 'booked'
+  | 'delivered'
+  | 'paid'
+  | 'lost'
 
 export type BusinessProof = {
   area: BusinessArea
@@ -11,6 +21,23 @@ export type BusinessProof = {
   output: string
   nextStep: string
   blocker: string
+}
+
+export type FocusSession = {
+  id: string
+  area: FocusArea
+  minutes: number
+  note: string
+  createdAt: string
+}
+
+export type ProofAttachment = {
+  id: string
+  area: BusinessArea | 'reading' | 'writing' | 'fitness' | 'review'
+  label: string
+  url: string
+  note: string
+  createdAt: string
 }
 
 export type DailyLog = {
@@ -32,6 +59,12 @@ export type DailyLog = {
   bodyNote: string
   progressPhotoUrl: string
   progressPhotoLocal: string
+  dayMode: DayMode
+  lockedAt: string
+  energyLevel: number
+  mentalClarity: number
+  focusSessions: FocusSession[]
+  proofAttachments: ProofAttachment[]
   dailyReviewDone: boolean
   mood: string
   lessons: string
@@ -68,8 +101,30 @@ export type RestartEvent = {
   syncStatus: 'local' | 'synced' | 'error'
 }
 
+export type BusinessPipelineItem = {
+  id: string
+  area: BusinessArea
+  title: string
+  stage: BusinessPipelineStage
+  value: number
+  nextAction: string
+  followUpDate: string
+  notes: string
+  createdAt: string
+  updatedAt: string
+  syncStatus: 'local' | 'synced' | 'error'
+}
+
+export type DeviceStatus = {
+  id: string
+  name: string
+  lastSeenAt: string
+  syncState: 'local' | 'syncing' | 'synced' | 'offline' | 'error'
+}
+
 export type MissionData = {
   logs: DailyLog[]
   revenue: RevenueEntry[]
   restarts: RestartEvent[]
+  pipeline: BusinessPipelineItem[]
 }

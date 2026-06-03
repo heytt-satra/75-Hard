@@ -5,12 +5,22 @@ import type {
   MissionData,
   RestartEvent,
   RevenueEntry,
+  BusinessPipelineStage,
 } from './types'
 
 export const START_DATE = '2026-06-02'
 export const TOTAL_DAYS = 75
 export const DEFAULT_WATER_GOAL = 3000
 export const MONTHLY_REVENUE_GOAL = 200000
+export const pipelineStages: BusinessPipelineStage[] = [
+  'lead',
+  'outreach',
+  'proposal',
+  'booked',
+  'delivered',
+  'paid',
+  'lost',
+]
 
 export const disciplineMessages = [
   'Sun will rise and I will do it again.',
@@ -106,6 +116,12 @@ export const createDailyLog = (date = todayKey()): DailyLog => ({
   bodyNote: '',
   progressPhotoUrl: '',
   progressPhotoLocal: '',
+  dayMode: 'standard',
+  lockedAt: '',
+  energyLevel: 5,
+  mentalClarity: 5,
+  focusSessions: [],
+  proofAttachments: [],
   dailyReviewDone: false,
   mood: '',
   lessons: '',
@@ -238,6 +254,16 @@ const textFromLog = (log: DailyLog, revenue: RevenueEntry[]) => {
     log.writingNote,
     log.bodyWeightKg,
     log.bodyNote,
+    log.dayMode,
+    log.energyLevel,
+    log.mentalClarity,
+    ...log.focusSessions.flatMap((session) => [session.area, session.minutes, session.note]),
+    ...log.proofAttachments.flatMap((attachment) => [
+      attachment.area,
+      attachment.label,
+      attachment.url,
+      attachment.note,
+    ]),
     log.lessons,
     log.felt,
     log.cannotQuitReason,
@@ -349,6 +375,20 @@ export const improvementMetrics = (data: MissionData) => {
   const completionAverage = logs.length
     ? Math.round(logs.reduce((sum, log) => sum + completionPercent(log), 0) / logs.length)
     : 0
+  const totalFocusMinutes = logs.reduce(
+    (sum, log) => sum + log.focusSessions.reduce((sessionSum, session) => sessionSum + session.minutes, 0),
+    0,
+  )
+  const averageEnergy = average(logs.map((log) => log.energyLevel).filter((value) => value > 0))
+  const averageClarity = average(logs.map((log) => log.mentalClarity).filter((value) => value > 0))
+  const completedByWeekday = weekdayMetrics(logs)
+  const updateHours = hourMetrics(logs)
+  const pipelineValue = data.pipeline
+    .filter((item) => item.stage !== 'lost' && item.stage !== 'paid')
+    .reduce((sum, item) => sum + Number(item.value || 0), 0)
+  const pipelineWon = data.pipeline
+    .filter((item) => item.stage === 'paid')
+    .reduce((sum, item) => sum + Number(item.value || 0), 0)
 
   return {
     completionAverage,
@@ -359,6 +399,11 @@ export const improvementMetrics = (data: MissionData) => {
     writingDays: logs.filter((log) => log.writingDone).length,
     businessProofDays: businessDays.length,
     totalRevenueWon,
+    totalFocusMinutes,
+    averageEnergy,
+    averageClarity,
+    pipelineValue,
+    pipelineWon,
     bodyWeightChange:
       firstWeight !== undefined && lastWeight !== undefined
         ? Number((lastWeight - firstWeight).toFixed(1))
@@ -373,5 +418,94 @@ export const improvementMetrics = (data: MissionData) => {
       goal: log.waterGoalMl,
     })),
     weightChart: weights,
+    completedByWeekday,
+    updateHours,
   }
+}
+
+export const weeklyReview = (data: MissionData) => {
+  const logs = data.logs.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 7)
+  const completions = logs.map(completionPercent)
+  const missedTasks = logs.flatMap((log) =>
+    coreTaskStatus(log)
+      .filter((task) => !task.done)
+      .map((task) => task.label),
+  )
+  const missedCounts = countValues(missedTasks)
+  const topMiss = missedCounts.at(0)
+  const focusMinutes = logs.reduce(
+    (sum, log) => sum + log.focusSessions.reduce((sessionSum, session) => sessionSum + session.minutes, 0),
+    0,
+  )
+
+  return {
+    daysReviewed: logs.length,
+    averageCompletion: completions.length
+      ? Math.round(completions.reduce((sum, value) => sum + value, 0) / completions.length)
+      : 0,
+    cleanDays: logs.filter((log) => completionPercent(log) === 100).length,
+    focusMinutes,
+    topMiss: topMiss?.label ?? 'No misses yet',
+  }
+}
+
+export const streakReason = (log: DailyLog) => {
+  const open = coreTaskStatus(log).filter((task) => !task.done)
+  if (completionPercent(log) === 100) return 'Clean day secured. Keep the proof, not just the mood.'
+  if (log.paused) return log.pauseReason ? `Paused with reason: ${log.pauseReason}` : 'Paused day needs a note.'
+  return `${open.length} task${open.length === 1 ? '' : 's'} blocking the clean day: ${open
+    .slice(0, 2)
+    .map((task) => task.label)
+    .join(', ')}${open.length > 2 ? '...' : ''}`
+}
+
+export const nextNudge = (log: DailyLog) => {
+  const open = coreTaskStatus(log).filter((task) => !task.done)
+  if (!open.length) return 'All core tasks are complete. Lock the day and stop renegotiating.'
+  const hour = new Date().getHours()
+  if (hour < 9 && open.some((task) => task.id === 'reading')) return 'Morning edge: clear reading before the day gets loud.'
+  if (hour >= 18 && open.some((task) => task.id === 'review')) return 'Evening closeout is open. Capture the lesson before sleep.'
+  if (open.some((task) => ['tera', 'lensr', 'job'].includes(task.id))) {
+    return 'Business proof is still open. Write the output, not the intention.'
+  }
+  return `Next clean move: ${open[0].label}.`
+}
+
+const average = (values: number[]) => {
+  return values.length ? Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(1)) : 0
+}
+
+const weekdayMetrics = (logs: DailyLog[]) => {
+  const labels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  return labels.map((label, index) => {
+    const matching = logs.filter((log) => new Date(`${log.date}T00:00:00`).getDay() === index)
+    return {
+      day: label,
+      completion: matching.length
+        ? Math.round(matching.reduce((sum, log) => sum + completionPercent(log), 0) / matching.length)
+        : 0,
+    }
+  })
+}
+
+const hourMetrics = (logs: DailyLog[]) => {
+  const buckets = [6, 9, 12, 15, 18, 21, 24]
+  return buckets.map((hour) => {
+    const matching = logs.filter((log) => {
+      const updatedHour = new Date(log.updatedAt).getHours()
+      return hour === 24 ? updatedHour >= 21 : updatedHour >= hour - 3 && updatedHour < hour
+    })
+    return {
+      hour: hour === 24 ? '21-24' : `${hour - 3}-${hour}`,
+      logs: matching.length,
+    }
+  })
+}
+
+const countValues = (values: string[]) => {
+  const counts = new Map<string, number>()
+  values.forEach((value) => counts.set(value, (counts.get(value) ?? 0) + 1))
+  return [...counts.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count)
 }

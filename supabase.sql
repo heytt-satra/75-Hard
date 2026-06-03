@@ -25,6 +25,22 @@ create table if not exists public.restart_events (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.business_pipeline (
+  id uuid primary key,
+  area text not null,
+  stage text not null,
+  value numeric not null default 0,
+  payload jsonb not null,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.device_status (
+  id text primary key,
+  name text not null,
+  sync_state text not null,
+  last_seen_at timestamptz not null default now()
+);
+
 insert into storage.buckets (id, name, public)
 values ('progress-photos', 'progress-photos', true)
 on conflict (id) do nothing;
@@ -32,6 +48,8 @@ on conflict (id) do nothing;
 alter table public.daily_logs enable row level security;
 alter table public.revenue_entries enable row level security;
 alter table public.restart_events enable row level security;
+alter table public.business_pipeline enable row level security;
+alter table public.device_status enable row level security;
 
 create policy "personal anon daily logs"
 on public.daily_logs
@@ -49,6 +67,20 @@ with check (true);
 
 create policy "personal anon restart events"
 on public.restart_events
+for all
+to anon
+using (true)
+with check (true);
+
+create policy "personal anon business pipeline"
+on public.business_pipeline
+for all
+to anon
+using (true)
+with check (true);
+
+create policy "personal anon device status"
+on public.device_status
 for all
 to anon
 using (true)
@@ -80,6 +112,22 @@ end $$;
 do $$
 begin
   alter publication supabase_realtime add table public.restart_events;
+exception
+  when duplicate_object then null;
+  when undefined_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.business_pipeline;
+exception
+  when duplicate_object then null;
+  when undefined_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.device_status;
 exception
   when duplicate_object then null;
   when undefined_object then null;
